@@ -38,11 +38,7 @@
         "INTERNET",
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION"
-      ],
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#1B3A5C"
-      }
+      ]
     },
     "extra": {
       "eas": {
