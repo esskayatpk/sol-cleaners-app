@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "Sol Cleaners",
+    "slug": "sol-cleaners-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "scheme": "solcleaners",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1B3A5C"
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.solcleaners.app",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "This app needs local network access to sync with your cleaning orders.",
+        "NSBonjourServiceTypes": [
+          "_http._tcp"
+        ],
+        "NSLocationWhenInUseUsageDescription": "Location is used for route optimization and delivery tracking."
+      }
+    },
+    "android": {
+      "package": "com.solcleaners.app",
+      "versionCode": 1,
+      "permissions": [
+        "INTERNET",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1B3A5C"
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "b15629fd-4a94-40ea-a39b-83ed288c4290"
+      }
+    }
+  }
+}
