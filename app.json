@@ -7,11 +7,6 @@
     "userInterfaceStyle": "light",
     "newArchEnabled": false,
     "scheme": "solcleaners",
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#1B3A5C"
-    },
     "web": {
       "bundler": "metro"
     },
@@ -42,6 +37,9 @@
       "eas": {
         "projectId": "b15629fd-4a94-40ea-a39b-83ed288c4290"
       }
-    }
+    },
+    "plugins": [
+      "expo-sqlite"
+    ]
   }
 }
