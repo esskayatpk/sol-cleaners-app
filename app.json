@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "scheme": "solcleaners",
     "icon": "./assets/icon.png",
     "splash": {
@@ -24,9 +24,11 @@
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "This app needs local network access to sync with your cleaning orders.",
         "NSBonjourServiceTypes": [
+          "_http._tcp",
           "_http._tcp"
         ],
-        "NSLocationWhenInUseUsageDescription": "Location is used for route optimization and delivery tracking."
+        "NSLocationWhenInUseUsageDescription": "Location is used for route optimization and delivery tracking.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
