@@ -246,6 +246,10 @@ export default function App() {
   const [custResetEmail, setCustResetEmail] = useState("");
   const [custResetSent, setCustResetSent] = useState(false);
 
+  // ─── Admin Hidden Access ───
+  const [adminTapCount, setAdminTapCount] = useState(0);
+  const [showAdminButton, setShowAdminButton] = useState(false);
+
   // Auto-login: check for saved customer on app launch
   useEffect(() => {
     const initializeApp = async () => {
@@ -883,6 +887,20 @@ export default function App() {
     setRouteOptimized(true);
   };
 
+  const handleLogoTap = () => {
+    const newCount = adminTapCount + 1;
+    setAdminTapCount(newCount);
+    if (newCount === 5) {
+      setShowAdminButton(true);
+      logger.info("Admin button revealed", { method: "logo-tap" });
+      setAdminTapCount(0);
+    }
+    // Reset counter if user stops tapping for 2 seconds
+    setTimeout(() => {
+      setAdminTapCount(0);
+    }, 2000);
+  };
+
   // ═══════════════════════════════════════
   // SPLASH SCREEN
   // ═══════════════════════════════════════
@@ -891,14 +909,18 @@ export default function App() {
       <Screen bgColor={C.primaryDark}>
       <View style={{ flex: 1, backgroundColor: C.primaryDark, alignItems: "center", justifyContent: "center", padding: 32 }}>
         <StatusBar barStyle="light-content" />
-        <TouchableOpacity onPress={() => { setMode("admin"); setScreen("admin-orders"); }}
-          style={{ position: "absolute", top: 16, right: 16, backgroundColor: "rgba(255,255,255,0.1)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)", borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8, flexDirection: "row", alignItems: "center", gap: 5 }}>
-          <Icon name="settings" size={14} color="rgba(255,255,255,0.85)" />
-          <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", fontWeight: "600" }}>Admin</Text>
-        </TouchableOpacity>
+        {showAdminButton && (
+          <TouchableOpacity onPress={() => { setMode("admin"); setScreen("admin-orders"); }}
+            style={{ position: "absolute", top: 16, right: 16, backgroundColor: "rgba(255,255,255,0.1)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)", borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8, flexDirection: "row", alignItems: "center", gap: 5 }}>
+            <Icon name="settings" size={14} color="rgba(255,255,255,0.85)" />
+            <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", fontWeight: "600" }}>Admin</Text>
+          </TouchableOpacity>
+        )}
 
         <View style={{ paddingHorizontal: 16, alignItems: "center" }}>
-          <Text style={{ fontSize: 36, fontWeight: "800", color: C.accent, fontStyle: "italic", width: 200, textAlign: "center" }}>Sol</Text>
+          <TouchableOpacity onPress={handleLogoTap} activeOpacity={0.7}>
+            <Text style={{ fontSize: 36, fontWeight: "800", color: C.accent, fontStyle: "italic", width: 200, textAlign: "center" }}>Sol</Text>
+          </TouchableOpacity>
           <Text style={{ fontSize: 36, fontWeight: "900", color: "#fff", letterSpacing: 2, marginTop: -4 }}>CLEANERS</Text>
         </View>
         <View style={{ width: 60, height: 2, backgroundColor: C.accent, borderRadius: 1, marginVertical: 10, opacity: 0.6 }} />
@@ -909,7 +931,7 @@ export default function App() {
         <Btn onPress={handleAutoLogin} style={{ backgroundColor: C.accent, borderRadius: 16, paddingHorizontal: 32, paddingVertical: 16, width: "100%", marginBottom: 32 }}>
           <Icon name="hanger" size={22} color="#fff" /><BtnText style={{ fontSize: 16 }}>Schedule a Pickup</BtnText>
         </Btn>
-        <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 14, fontWeight: "600", marginTop: 10, marginBottom: 6 }}>5 Post Office Square</Text>
+        <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 14, fontWeight: "600", marginTop: 10, marginBottom: 6 }}>5 Post Office Square Suite #10</Text>
         <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 14, fontWeight: "600", marginBottom: 8 }}>Sharon, MA</Text>
         <Text style={{ color: "rgba(255,255,255,0.55)", fontSize: 13, fontWeight: "600", marginBottom: 32 }}>(781) 784-3937</Text>
       </View>
