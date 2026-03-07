@@ -239,10 +239,12 @@ export default function App() {
   const [custEmail, setCustEmail] = useState("");
   const [custPassword, setCustPassword] = useState("");
   const [custShowPassword, setCustShowPassword] = useState(false);
-  const [custLoginMode, setCustLoginMode] = useState("login"); // "login" | "register"
+  const [custLoginMode, setCustLoginMode] = useState("login"); // "login" | "register" | "forgot-password"
   const [custLoginError, setCustLoginError] = useState("");
   const [custLoading, setCustLoading] = useState(true); // starts true for auto-login check
   const [custAccountCreated, setCustAccountCreated] = useState(false);
+  const [custResetEmail, setCustResetEmail] = useState("");
+  const [custResetSent, setCustResetSent] = useState(false);
 
   // Auto-login: check for saved customer on app launch
   useEffect(() => {
@@ -514,6 +516,70 @@ export default function App() {
     setCustName(""); setCustPhone(""); setCustEmail(""); setCustPassword("");
     setCustAddress(""); setCustCity("Sharon"); setCustZip("02067");
     setMode(null); setScreen("home");
+  };
+
+  const handleCustPasswordReset = async () => {
+    setCustLoginError("");
+    if (!custResetEmail.trim() || !custResetEmail.includes("@")) {
+      setCustLoginError("Please enter a valid email address.");
+      return;
+    }
+
+    try {
+      // Check if email exists in local storage
+      const cust = await storage.getCustomer();
+      if (cust && cust.email && cust.email.toLowerCase() === custResetEmail.toLowerCase()) {
+        // Email found - simulate sending reset link
+        logger.info("Password reset email sent", { email: custResetEmail });
+        setCustResetSent(true);
+        setCustResetEmail("");
+        
+        // In production with Supabase, you would call:
+        // await supabase.auth.resetPasswordForEmail(custResetEmail);
+        
+        setTimeout(() => {
+          setCustResetSent(false);
+          setCustLoginMode("login");
+        }, 3000);
+      } else {
+        // Email not found
+        setCustLoginError("Email not found. Please check and try again, or register a new account.");
+        logger.warn("Password reset email not found", { email: custResetEmail });
+      }
+    } catch (e) {
+      setCustLoginError("Error sending reset email. Please try again.");
+      logger.error("Password reset error", { error: e.message });
+    }
+  };
+
+  const handleAutoLogin = async () => {
+    try {
+      const creds = await storage.getCustomerCredentials();
+      if (creds && creds.email && creds.password) {
+        // Auto-login with saved creds
+        const cust = await storage.getCustomer();
+        if (cust) {
+          setCustName(cust.name || "");
+          setCustPhone(cust.phone || "");
+          setCustEmail(cust.email || "");
+          setCustAddress(cust.address || "");
+          setCustCity(cust.city || "Sharon");
+          setCustZip(cust.zip || "02067");
+          setCustLoggedIn(true);
+          setMode("customer");
+          setScreen("home");
+          logger.info("Auto-logged in from splash screen", { email: creds.email });
+          return;
+        }
+      }
+      // No saved credentials, show auth screen
+      setMode("customer");
+      setScreen("cust-auth");
+    } catch (e) {
+      logger.error("Auto-login error", { error: e.message });
+      setMode("customer");
+      setScreen("cust-auth");
+    }
   };
 
   const handleCustUpdateProfile = async () => {
@@ -831,18 +897,21 @@ export default function App() {
           <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", fontWeight: "600" }}>Admin</Text>
         </TouchableOpacity>
 
-        <Text style={{ fontSize: 38, fontWeight: "800", color: C.accent, fontStyle: "italic" }}>Sol</Text>
-        <Text style={{ fontSize: 36, fontWeight: "900", color: "#fff", letterSpacing: 5, marginTop: -4 }}>CLEANERS</Text>
+        <View style={{ paddingHorizontal: 16, alignItems: "center" }}>
+          <Text style={{ fontSize: 36, fontWeight: "800", color: C.accent, fontStyle: "italic", width: 200, textAlign: "center" }}>Sol</Text>
+          <Text style={{ fontSize: 36, fontWeight: "900", color: "#fff", letterSpacing: 2, marginTop: -4 }}>CLEANERS</Text>
+        </View>
         <View style={{ width: 60, height: 2, backgroundColor: C.accent, borderRadius: 1, marginVertical: 10, opacity: 0.6 }} />
         <Text style={{ color: "rgba(255,255,255,0.55)", fontSize: 10, fontWeight: "600", letterSpacing: 3, textTransform: "uppercase" }}>Service Oriented Laundry</Text>
         <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: 9, letterSpacing: 2, marginTop: 4, textTransform: "uppercase" }}>Estd Since 2000</Text>
 
         <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, marginTop: 50, marginBottom: 24 }}>Eco-Friendly Dry Cleaning</Text>
-        <Btn onPress={() => { setMode("customer"); setScreen(custLoggedIn ? "home" : "cust-auth"); }} style={{ backgroundColor: C.accent, borderRadius: 16, paddingHorizontal: 32, paddingVertical: 16, width: "100%" }}>
+        <Btn onPress={handleAutoLogin} style={{ backgroundColor: C.accent, borderRadius: 16, paddingHorizontal: 32, paddingVertical: 16, width: "100%", marginBottom: 32 }}>
           <Icon name="hanger" size={22} color="#fff" /><BtnText style={{ fontSize: 16 }}>Schedule a Pickup</BtnText>
         </Btn>
-        <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: 12, marginTop: 10 }}>Sharon, MA</Text>
-        <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, marginTop: 20 }}>(781) 784-3937 • 5 Post Office Square</Text>
+        <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 14, fontWeight: "600", marginTop: 10, marginBottom: 6 }}>5 Post Office Square</Text>
+        <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 14, fontWeight: "600", marginBottom: 8 }}>Sharon, MA</Text>
+        <Text style={{ color: "rgba(255,255,255,0.55)", fontSize: 13, fontWeight: "600", marginBottom: 32 }}>(781) 784-3937</Text>
       </View>
       </Screen>
     );
@@ -873,10 +942,38 @@ export default function App() {
             </Text>
           </Header>
           <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 120 }} keyboardShouldPersistTaps="handled">
-            <Card>
-              {/* Mode toggle */}
-              <View style={{ flexDirection: "row", backgroundColor: C.bg, borderRadius: 10, padding: 3, marginBottom: 20 }}>
-                {["login", "register"].map(m => (
+            {custLoginMode === "forgot-password" ? (
+              <Card>
+                <Text style={{ fontSize: 16, fontWeight: "700", color: C.text, marginBottom: 12 }}>Reset Your Password</Text>
+                <Text style={{ fontSize: 13, color: C.textMuted, marginBottom: 16, lineHeight: 20 }}>
+                  Enter the email address associated with your account and we'll send you a password reset link.
+                </Text>
+
+                {custResetSent ? (
+                  <View style={{ backgroundColor: C.successLight, borderRadius: 12, padding: 16, alignItems: "center" }}>
+                    <Icon name="check" size={32} color={C.success} style={{ marginBottom: 12 }} />
+                    <Text style={{ fontSize: 15, fontWeight: "700", color: C.success, marginBottom: 4 }}>Check Your Email!</Text>
+                    <Text style={{ fontSize: 13, color: C.text, textAlign: "center", marginBottom: 16 }}>We've sent a password reset link to {custResetEmail}</Text>
+                    <Text style={{ fontSize: 12, color: C.textMuted, textAlign: "center" }}>You'll be redirected to Sign In in a few moments...</Text>
+                  </View>
+                ) : (
+                  <>
+                    <View><Label>Email Address</Label><Input value={custResetEmail} onChangeText={setCustResetEmail} placeholder="you@email.com" keyboardType="email-address" autoCapitalize="none" /></View>
+                    {custLoginError ? <Text style={{ color: C.danger, fontSize: 12, marginTop: 10 }}>{custLoginError}</Text> : null}
+                    <Btn onPress={handleCustPasswordReset} style={{ marginTop: 20 }}>
+                      <Icon name="send" size={16} color="#fff" /><BtnText>Send Reset Link</BtnText>
+                    </Btn>
+                    <TouchableOpacity onPress={() => { setCustLoginMode("login"); setCustLoginError(""); }} style={{ marginTop: 16, alignItems: "center" }}>
+                      <Text style={{ fontSize: 13, color: C.accent, fontWeight: "600" }}>← Back to Sign In</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </Card>
+            ) : (
+              <Card>
+                {/* Mode toggle */}
+                <View style={{ flexDirection: "row", backgroundColor: C.bg, borderRadius: 10, padding: 3, marginBottom: 20 }}>
+                  {["login", "register"].map(m => (
                   <TouchableOpacity key={m} onPress={() => { setCustLoginMode(m); setCustLoginError(""); }}
                     style={{ flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: custLoginMode === m ? C.primary : "transparent", alignItems: "center" }}>
                     <Text style={{ fontSize: 14, fontWeight: "600", color: custLoginMode === m ? "#fff" : C.textSecondary }}>{m === "login" ? "Sign In" : "Register"}</Text>
@@ -914,12 +1011,19 @@ export default function App() {
                 <BtnText>{custLoginMode === "register" ? "Create Account" : "Sign In"}</BtnText>
               </Btn>
 
+              {custLoginMode === "login" && (
+                <TouchableOpacity onPress={() => { setCustLoginMode("forgot-password"); setCustLoginError(""); }} style={{ marginTop: 14, alignItems: "center" }}>
+                  <Text style={{ fontSize: 12, color: C.accent, fontWeight: "600" }}>Forgot your password?</Text>
+                </TouchableOpacity>
+              )}
+
               {custLoginMode === "register" && (
                 <Text style={{ fontSize: 11, color: C.textMuted, textAlign: "center", marginTop: 12, lineHeight: 16 }}>
                   Your info is saved on this device so you don't have to enter it again. In production, this creates a secure account with Sol Cleaners.
                 </Text>
               )}
             </Card>
+            )}
           </ScrollView>
         </Screen>
       );
@@ -929,9 +1033,9 @@ export default function App() {
     if (screen === "cust-profile") {
       return (
         <Screen>
-          <Header>
-            <TouchableOpacity onPress={() => setScreen("home")} style={{ padding: 4 }}><Icon name="back" size={22} color="#fff" /></TouchableOpacity>
-            <View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700" }}>My Account</Text></View>
+          <Header style={{ flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+            <TouchableOpacity onPress={() => setScreen("home")} style={{ position: "absolute", left: 16, padding: 4 }}><Icon name="back" size={22} color="#fff" /></TouchableOpacity>
+            <View style={{ alignItems: "center" }}><Text style={{ color: "#fff", fontSize: 16, fontWeight: "700", marginBottom: 4 }}>{custName}</Text><Text style={{ color: "#fff", fontSize: 14, fontWeight: "600" }}>My Account</Text></View>
           </Header>
           <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 160 }}>
             {/* Account info */}
@@ -1004,6 +1108,7 @@ export default function App() {
       return (
         <Screen>
           <Header style={{ justifyContent: "center", alignItems: "center", flexDirection: "column", paddingBottom: 32 }}>
+            <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700", marginBottom: 12 }}>{custName}</Text>
             <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
               <Icon name="check" size={36} color="#fff" />
             </View>
@@ -1046,9 +1151,9 @@ export default function App() {
     if (screen === "new-order") {
       return (
         <Screen>
-          <Header>
-            <TouchableOpacity onPress={() => setScreen("home")} style={{ padding: 4 }}><Icon name="back" size={22} color="#fff" /></TouchableOpacity>
-            <View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700" }}>{t("schedulePickupTitle")}</Text><Text style={{ color: "rgba(255,255,255,0.8)", fontSize: 11, marginTop: 2 }}>{t("weekdaysOnly")}</Text></View>
+          <Header style={{ flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+            <TouchableOpacity onPress={() => setScreen("home")} style={{ position: "absolute", left: 16, padding: 4 }}><Icon name="back" size={22} color="#fff" /></TouchableOpacity>
+            <View style={{ alignItems: "center" }}><Text style={{ color: "#fff", fontSize: 16, fontWeight: "700", marginBottom: 4 }}>{custName}</Text><Text style={{ color: "#fff", fontSize: 14, fontWeight: "600" }}>{t("schedulePickupTitle")}</Text><Text style={{ color: "rgba(255,255,255,0.8)", fontSize: 11, marginTop: 2 }}>{t("weekdaysOnly")}</Text></View>
           </Header>
           
           {/* Store Info - Always Visible */}
@@ -1234,7 +1339,7 @@ export default function App() {
     if (screen === "my-orders") {
       return (
         <Screen>
-          <Header><View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700" }}>My Orders</Text></View></Header>
+          <Header style={{ justifyContent: "center", alignItems: "center" }}><View style={{ alignItems: "center" }}><Text style={{ color: "#fff", fontSize: 16, fontWeight: "700", marginBottom: 4 }}>{custName}</Text><Text style={{ color: "#fff", fontSize: 14, fontWeight: "600" }}>My Orders</Text></View></Header>
           <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 160 }}>
             {custOrders.length === 0 ? (
               <View style={{ alignItems: "center", paddingVertical: 40 }}>
@@ -1261,11 +1366,12 @@ export default function App() {
     // ─── Customer Home ───
     return (
       <Screen>
-        <Header style={{ paddingBottom: 24, flexDirection: "column", alignItems: "flex-start" }}>
-          <View style={{ flexDirection: "row", alignItems: "center", width: "100%", marginBottom: 8 }}>
+        <Header style={{ paddingBottom: 24, flexDirection: "column", alignItems: "center" }}>
+          <Text style={{ color: "rgba(255,255,255,0.9)", fontSize: 16, fontWeight: "700", marginBottom: 12 }}>Welcome, {custName}!</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", width: "100%", marginBottom: 8, justifyContent: "center" }}>
             <SolLogo size={18} dark />
             <TouchableOpacity onPress={() => { setMode("admin"); setScreen("admin-orders"); }}
-              style={{ marginLeft: "auto", backgroundColor: "rgba(255,255,255,0.1)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, flexDirection: "row", alignItems: "center", gap: 5 }}>
+              style={{ position: "absolute", right: 16, backgroundColor: "rgba(255,255,255,0.1)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, flexDirection: "row", alignItems: "center", gap: 5 }}>
               <Icon name="settings" size={13} color="rgba(255,255,255,0.7)" />
               <Text style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", fontWeight: "600" }}>Admin</Text>
             </TouchableOpacity>
@@ -1559,7 +1665,7 @@ export default function App() {
           <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 160 }}>
             {/* Date selector */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
-              {availDates.slice(0, 5).map(d => (
+              {availDates.map(d => (
                 <TouchableOpacity key={d.date} onPress={() => { setAdminDateFilter(d.date); setRouteOptimized(false); }}
                   style={{ paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, marginRight: 8, backgroundColor: adminDateFilter === d.date ? C.primary : C.card, borderWidth: 1.5, borderColor: adminDateFilter === d.date ? C.primary : C.border }}>
                   <Text style={{ fontSize: 13, fontWeight: "600", color: adminDateFilter === d.date ? "#fff" : C.text }}>{d.label}</Text>
