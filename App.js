@@ -314,6 +314,9 @@ export default function App() {
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [biometricType, setBiometricType] = useState(null); // "fingerprint" | "faceId" | "iris"
 
+  // ─── Order Editing (Customer) ───
+  const [editingOrderId, setEditingOrderId] = useState(null);
+
   // ─── Admin Hidden Access ───
   const [adminTapCount, setAdminTapCount] = useState(0);
   const [showAdminButton, setShowAdminButton] = useState(false);
@@ -906,13 +909,54 @@ export default function App() {
       return;
     }
     const itemDesc = Object.entries(items).map(([k, v]) => `${v}x ${ITEM_TYPES.find(t => t.key === k)?.label}`).join(", ");
-    // Generate unique order_number by finding max existing and incrementing
+    
+    // Check if we're editing an existing order
+    if (editingOrderId) {
+      // Update existing order
+      setOrders(prev => {
+        const updated = prev.map(o => o.id === editingOrderId ? {
+          ...o,
+          num_items: totalItems,
+          note: `${itemDesc}${note ? ` — ${note}` : ""}`,
+          pickup_date: pickupDate,
+          pickup_time: pickupTime,
+          payment_method: paymentMethod,
+          items: JSON.stringify(items)
+        } : o);
+        storage.saveOrders(updated).catch(e => logger.error("Failed to save edited order locally", { error: e.message }));
+        return updated;
+      });
+
+      // Sync update to Supabase if online
+      if (isOnline && supabaseReady) {
+        try {
+          logger.info("Order edit synced to Supabase", { orderId: editingOrderId });
+        } catch (e) {
+          logger.error("Order edit sync error", { error: e.message });
+        }
+      } else {
+        logger.info("Order edited offline, will sync when online", { orderId: editingOrderId });
+      }
+
+      // Reset and go back
+      setEditingOrderId(null);
+      setItems({});
+      setNote("");
+      setPickupDate("");
+      setPickupTime("");
+      setPaymentMethod("on_delivery");
+      Alert.alert("Success", "Order updated!");
+      setScreen("my-orders");
+      return;
+    }
+
+    // Create new order
     const nextOrderNumber = Math.max(...orders.map(o => o.order_number || 1000), 1000) + 1;
     const newOrder = {
       id: `ord-${Date.now()}`, order_number: nextOrderNumber, customer_name: custName,
       phone: custPhone, address: `${custAddress}, ${custCity}, MA ${custZip}`,
       lat: 42.12 + Math.random() * 0.02, lng: -71.17 - Math.random() * 0.02,
-      num_items: totalItems, note: `${itemDesc}${note ? ` — ${note}` : ""}`,
+      num_items: totalItems, note: `${itemDesc}${note ? ` — ${note}` : ""}`, items: JSON.stringify(items),
       status: "pending", pickup_date: pickupDate, pickup_time: pickupTime,
       payment_method: paymentMethod, created: new Date().toISOString().split("T")[0],
     };
@@ -1053,6 +1097,8 @@ export default function App() {
       });
     }
   };
+
+
 
   const handleAdminLogin = () => {
     setAdminLoginError(""); setAdminLoginLoading(true);
@@ -1462,8 +1508,8 @@ export default function App() {
       return (
         <Screen>
           <Header style={{ flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-            <TouchableOpacity onPress={() => setScreen("home")} style={{ position: "absolute", left: 16, padding: 4 }}><Icon name="back" size={22} color="#fff" /></TouchableOpacity>
-            <View style={{ alignItems: "center" }}><Text style={{ color: "#fff", fontSize: 16, fontWeight: "700", marginBottom: 4 }}>{custName}</Text><Text style={{ color: "#fff", fontSize: 14, fontWeight: "600" }}>{t("schedulePickupTitle")}</Text><Text style={{ color: "rgba(255,255,255,0.8)", fontSize: 11, marginTop: 2 }}>{t("weekdaysOnly")}</Text></View>
+            <TouchableOpacity onPress={() => { setEditingOrderId(null); setItems({}); setNote(""); setPickupDate(""); setPickupTime(""); setPaymentMethod("on_delivery"); setScreen(editingOrderId ? "my-orders" : "home"); }} style={{ position: "absolute", left: 16, padding: 4 }}><Icon name="back" size={22} color="#fff" /></TouchableOpacity>
+            <View style={{ alignItems: "center" }}><Text style={{ color: "#fff", fontSize: 16, fontWeight: "700", marginBottom: 4 }}>{custName}</Text><Text style={{ color: "#fff", fontSize: 14, fontWeight: "600" }}>{editingOrderId ? "Edit Order" : t("schedulePickupTitle")}</Text><Text style={{ color: "rgba(255,255,255,0.8)", fontSize: 11, marginTop: 2 }}>{t("weekdaysOnly")}</Text></View>
           </Header>
           
           {/* Store Info - Always Visible */}
@@ -1637,7 +1683,7 @@ export default function App() {
 
             {/* Submit */}
             <Btn onPress={handleSubmitOrder} disabled={!custName || !custPhone || !custAddress || !pickupDate || !pickupTime || totalItems < 10}>
-              <Icon name="check" size={18} color="#fff" /><BtnText>{t("confirmPickup")} — {totalItems} {totalItems !== 1 ? t("itemCounts") : t("itemCount")}</BtnText>
+              <Icon name="check" size={18} color="#fff" /><BtnText>{editingOrderId ? "Update Order" : t("confirmPickup")} — {totalItems} {totalItems !== 1 ? t("itemCounts") : t("itemCount")}</BtnText>
             </Btn>
           </ScrollView>
           <NavBar screen={screen} items={custNav} onPress={setScreen} />
@@ -1665,6 +1711,53 @@ export default function App() {
                 <Text style={{ fontSize: 12, color: C.textSecondary }}>{o.pickup_date} • {o.pickup_time}</Text>
                 <Text style={{ fontSize: 12, color: C.textMuted, marginTop: 4 }}>{o.num_items} items • {o.address}</Text>
                 <Text style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>{o.payment_method === "credit_card" ? "💳 Credit Card" : "💵 Pay on Delivery"}</Text>
+                <Text style={{ fontSize: 11, color: C.textMuted, marginTop: 4, lineHeight: 16 }}>{o.note}</Text>
+                {!["picked_up", "processing", "delivered", "cancelled"].includes(o.status) && (
+                  <Btn onPress={() => {
+                    // Load order data into form for editing
+                    setEditingOrderId(o.id);
+                    
+                    // Parse items from stored JSON or reconstruct from note
+                    let parsedItems = {};
+                    if (o.items) {
+                      try {
+                        parsedItems = JSON.parse(o.items);
+                      } catch (e) {
+                        parsedItems = {};
+                      }
+                    } else if (o.note) {
+                      // Fallback: reconstruct items from note text
+                      // Note format: "3x Shirts, 2x Suits, 4x Pants — Special notes"
+                      const mainPart = o.note.split("—")[0];
+                      mainPart.split(",").forEach(part => {
+                        const match = part.trim().match(/(\d+)x\s+(.+)/);
+                        if (match) {
+                          const count = parseInt(match[1]);
+                          const itemLabel = match[2].trim();
+                          // Find matching ITEM_TYPE key
+                          const itemType = ITEM_TYPES.find(t => t.label.toLowerCase() === itemLabel.toLowerCase());
+                          if (itemType) {
+                            parsedItems[itemType.key] = count;
+                          }
+                        }
+                      });
+                    }
+                    
+                    setItems(parsedItems);
+                    
+                    // Extract special instructions from note (after —)
+                    const noteParts = o.note ? o.note.split("—") : [];
+                    const specialInstructions = noteParts.length > 1 ? noteParts[1].trim() : "";
+                    
+                    setNote(specialInstructions);
+                    setPickupDate(o.pickup_date);
+                    setPickupTime(o.pickup_time);
+                    setPaymentMethod(o.payment_method);
+                    setScreen("new-order");
+                  }} style={{ marginTop: 12, backgroundColor: C.accent, alignItems: "center", justifyContent: "center" }}>
+                    <Icon name="edit" size={16} color="#fff" /><BtnText>Edit Order</BtnText>
+                  </Btn>
+                )}
               </Card>
             ))}
           </ScrollView>
@@ -1704,8 +1797,8 @@ export default function App() {
             { num: "4", title: "Clean & Deliver", desc: "Expert eco-friendly cleaning, then delivery" },
           ].map((step, i) => (
             <View key={i} style={{ flexDirection: "row", gap: 14, marginBottom: 12 }}>
-              <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: i === 2 ? C.accentLight : C.primaryLight, alignItems: "center", justifyContent: "center" }}>
-                <Text style={{ fontSize: 15, fontWeight: "800", color: i === 2 ? C.accent : C.primary }}>{step.num}</Text>
+              <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: C.primaryLight, alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ fontSize: 15, fontWeight: "800", color: C.primary }}>{step.num}</Text>
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 14, fontWeight: "600", color: C.text }}>{step.title}</Text>
