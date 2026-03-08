@@ -8,6 +8,7 @@ Works on **iPhone**, **Android**, and **Web** from the same codebase.
 
 ## Latest Features (March 2026)
 
+✅ **Biometric Authentication** — Face ID (iOS) & Fingerprint (Android) for secure, fast login  
 ✅ **Hidden Admin Access** — 5-tap gesture on splash screen logo reveals admin portal  
 ✅ **Password Reset** — Email-based password recovery with email verification  
 ✅ **Auto-Login** — Stays logged in even after app restart (with manual logout option)  
@@ -146,6 +147,22 @@ Reports update in real-time and are stored in Supabase.
 - **Manual Sign Out**: Available on profile; clears saved credentials
 - **Customer Identity**: Name displayed on all customer screens
 
+### 🔐 Biometric Authentication
+- **Face ID (iOS)**: Native Face ID authentication on iPhone X and newer
+- **Fingerprint (Android)**: Native fingerprint scanner on supported devices
+- **Hardware Detection**: App automatically detects device biometric capabilities on startup
+- **User Control**: Enable/disable biometric in customer profile → Security Settings card
+- **Secure Credential Storage**: Biometric unlocks saved credentials for instant login
+- **Device Encryption**: Biometrics use device's secure enclave (not stored in app)
+- **Fallback to Password**: Password login always available if biometric fails or not enrolled
+- **Fast Re-auth**: Users who enable biometric skip password entry on every login
+- **Cross-Session Persistence**: Biometric preference saved to SQLite, survives app restart
+- **How to Use**: 
+  1. Tap "My Account" → scroll to "Security Settings"
+  2. Tap "Enable Face ID" or "Enable Fingerprint"
+  3. Confirm with device biometric
+  4. On next login, use biometric button below password field
+
 ### ☁️ Cloud Backup & Sync
 - **Local-First**: All changes saved to SQLite immediately for instant response
 - **Cloud Sync**: Changes automatically replicated to Supabase when online
@@ -235,6 +252,7 @@ eas build --platform ios --profile preview
 - **Cloud Database**: Supabase (PostgreSQL) with real-time capabilities
 - **Cloud Auth**: Supabase Auth (email/password with reset)
 - **Local Storage**: SQLite (expo-sqlite) on native, in-memory on web
+- **Biometric Auth**: expo-local-authentication (Face ID/Fingerprint)
 - **Network Detection**: @react-native-community/netinfo
 - **Localization**: Custom i18n.js (EN/ES)
 - **Logging**: Custom logger.js with INFO/WARN/ERROR levels
@@ -246,15 +264,16 @@ eas build --platform ios --profile preview
 
 ```
 sol-native/
-├── App.js                      # Main app (2000+ lines)
+├── App.js                      # Main app (2100+ lines)
 │                               #   • Splash screen with 5-tap admin access
-│                               #   • Customer auth (login/register/password reset)
-│                               #   • Customer screens (home/new order/my orders)
+│                               #   • Customer auth (login/register/password reset/auto-login)
+│                               #   • Biometric auth (Face ID/Fingerprint with toggle)
+│                               #   • Customer screens (home/new order/my orders/profile)
 │                               #   • Admin dashboard (orders/routes/reports)
-│                               #   • Role-based navigation
+│                               #   • Role-based navigation & access control
 ├── supabaseClient.js           # Supabase integration (cloud operations)
 ├── networkStatus.js            # Network detection & monitoring
-├── sqliteStorage.js            # Local SQLite storage (offline cache)
+├── sqliteStorage.js            # Local SQLite storage (offline cache + biometric prefs)
 ├── i18n.js                     # English/Spanish translations
 ├── logger.js                   # Logging system (INFO/WARN/ERROR)
 ├── mmkvStorage.js              # MMKV storage integration
@@ -267,16 +286,21 @@ sol-native/
 
 ## Deployment Checklist
 
-- [ ] Verify all 9 dependencies are compatible
-- [ ] Test authentication (customer + admin)
+- [ ] Verify all npm dependencies are compatible
+- [ ] Test customer authentication (login/register/password reset)
+- [ ] Test admin authentication (5-tap hidden access)
+- [ ] Test biometric authentication (enable/disable toggle)
+- [ ] Test biometric login on iPhone (Face ID) and Android (Fingerprint)
+- [ ] Test fallback to password if biometric fails
 - [ ] Test offline order creation & sync on reconnect
 - [ ] Test admin order sync on login
-- [ ] Test reports with different timeframes
+- [ ] Test reports with different timeframes (weekly/monthly/yearly)
 - [ ] Test role-based access (admin sees reports, driver doesn't)
-- [ ] Test password reset flow
-- [ ] Test auto-login persistence
+- [ ] Test auto-login persistence across app restarts
 - [ ] Build APK/iOS with `eas build`
-- [ ] Test on real devices before submitting to stores
+- [ ] Test on real devices (iPhone + Android phone with biometric)
+- [ ] Verify no sensitive data in logs
+- [ ] Final smoke test before app store submission
 
 ## Support
 

@@ -212,6 +212,29 @@ class SQLiteStorage {
     }
   }
 
+  // ─── Biometric Authentication ───
+
+  async getBiometricEnabled() {
+    try {
+      const value = await this._getStoredValue("sol_biometric_enabled");
+      return value === "true";
+    } catch (e) {
+      logger.error("Failed to get biometric status", { error: e.message });
+      return false;
+    }
+  }
+
+  async setBiometricEnabled(enabled) {
+    try {
+      await this._setStoredValue("sol_biometric_enabled", enabled ? "true" : "false");
+      logger.info("Biometric preference saved", { enabled });
+      return true;
+    } catch (e) {
+      logger.error("Failed to save biometric preference", { error: e.message });
+      return false;
+    }
+  }
+
   // ─── Orders Operations ───
 
   async getOrders() {

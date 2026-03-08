@@ -22,6 +22,7 @@ import {
   logSMS,
 } from "./supabaseClient"; // Supabase for cloud storage
 import { subscribeToNetworkChanges, isAppOnline, checkNetworkStatus } from "./networkStatus"; // Network monitoring
+import * as LocalAuthentication from "expo-local-authentication";
 
 // ─── Color Tokens ───
 const C = {
@@ -308,6 +309,11 @@ export default function App() {
   const [custResetEmail, setCustResetEmail] = useState("");
   const [custResetSent, setCustResetSent] = useState(false);
 
+  // ─── Biometric Authentication ───
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [biometricType, setBiometricType] = useState(null); // "fingerprint" | "faceId" | "iris"
+
   // ─── Admin Hidden Access ───
   const [adminTapCount, setAdminTapCount] = useState(0);
   const [showAdminButton, setShowAdminButton] = useState(false);
@@ -350,6 +356,39 @@ export default function App() {
       }
     };
     initializeApp();
+  }, []);
+
+  // ─── Check Biometric Availability ───
+  useEffect(() => {
+    const checkBiometric = async () => {
+      try {
+        const compatible = await LocalAuthentication.hasHardwareAsync();
+        if (compatible) {
+          const supported = await LocalAuthentication.supportedAuthenticationTypesAsync();
+          setBiometricAvailable(supported.length > 0);
+          
+          // Determine biometric type
+          if (supported.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
+            setBiometricType("faceId");
+          } else if (supported.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
+            setBiometricType("fingerprint");
+          } else if (supported.includes(LocalAuthentication.AuthenticationType.IRIS)) {
+            setBiometricType("iris");
+          }
+          
+          // Check if user has enabled biometric auth previously
+          const enabled = await storage.getBiometricEnabled();
+          setBiometricEnabled(enabled || false);
+          logger.info("Biometric status", { available: true, enabled: enabled || false, type: supported[0] });
+        } else {
+          setBiometricAvailable(false);
+          logger.info("Biometric status", { available: false });
+        }
+      } catch (e) {
+        logger.error("Biometric check error", { error: e.message });
+      }
+    };
+    checkBiometric();
   }, []);
 
   // ─── Network Status Monitoring ───
@@ -699,6 +738,69 @@ export default function App() {
       logger.error("Auto-login error", { error: e.message });
       setMode("customer");
       setScreen("cust-auth");
+    }
+  };
+
+  const handleBiometricAuth = async () => {
+    try {
+      if (!biometricAvailable) {
+        Alert.alert("Biometric Not Available", "Your device does not support biometric authentication.");
+        return;
+      }
+
+      const result = await LocalAuthentication.authenticateAsync({
+        disableDeviceFallback: false,
+        reason: "Authenticate to log in to Sol Cleaners",
+      });
+
+      if (result.success) {
+        // Biometric authentication successful - load saved credentials and login
+        const creds = await storage.getCustomerCredentials();
+        if (creds && creds.email && creds.password) {
+          setCustEmail(creds.email);
+          setCustPassword(creds.password);
+          // Trigger login with saved credentials
+          await handleCustLogin();
+        }
+      } else {
+        setCustLoginError("Biometric authentication failed. Please try again.");
+        logger.warn("Biometric auth failed");
+      }
+    } catch (e) {
+      logger.error("Biometric auth error", { error: e.message });
+      setCustLoginError("Biometric authentication error. Please use password instead.");
+    }
+  };
+
+  const handleToggleBiometric = async (enable) => {
+    try {
+      if (enable && !biometricAvailable) {
+        Alert.alert("Not Available", "Biometric authentication is not available on this device.");
+        return;
+      }
+
+      if (enable) {
+        // Try to authenticate before enabling
+        const result = await LocalAuthentication.authenticateAsync({
+          disableDeviceFallback: false,
+          reason: "Enable biometric login for Sol Cleaners",
+        });
+
+        if (result.success) {
+          await storage.setBiometricEnabled(true);
+          setBiometricEnabled(true);
+          Alert.alert("Success", `Biometric login enabled! You can now login with your ${biometricType === "faceId" ? "face" : "fingerprint"}.`);
+          logger.info("Biometric enabled");
+        }
+      } else {
+        await storage.setBiometricEnabled(false);
+        setBiometricEnabled(false);
+        Alert.alert("Disabled", "Biometric login has been disabled. You'll need to enter your password to login.");
+        logger.info("Biometric disabled");
+      }
+    } catch (e) {
+      logger.error("Toggle biometric error", { error: e.message });
+      Alert.alert("Error", "Failed to update biometric settings.");
     }
   };
 
@@ -1177,6 +1279,13 @@ export default function App() {
                 <BtnText>{custLoginMode === "register" ? "Create Account" : "Sign In"}</BtnText>
               </Btn>
 
+              {custLoginMode === "login" && biometricEnabled && biometricAvailable && (
+                <Btn onPress={handleBiometricAuth} style={{ marginTop: 12, backgroundColor: C.accent + "CC" }}>
+                  <Icon name="fingerprint" size={16} color="#fff" />
+                  <BtnText>Login with {biometricType === "faceId" ? "Face ID" : "Fingerprint"}</BtnText>
+                </Btn>
+              )}
+
               {custLoginMode === "login" && (
                 <TouchableOpacity onPress={() => { setCustLoginMode("forgot-password"); setCustLoginError(""); }} style={{ marginTop: 14, alignItems: "center" }}>
                   <Text style={{ fontSize: 12, color: C.accent, fontWeight: "600" }}>Forgot your password?</Text>
@@ -1238,6 +1347,41 @@ export default function App() {
                 <Icon name="check" size={16} color="#fff" /><BtnText>Save Changes</BtnText>
               </Btn>
             </Card>
+
+            {/* Security Settings - Biometric Auth */}
+            {biometricAvailable && (
+              <Card>
+                <Text style={{ fontSize: 15, fontWeight: "700", color: C.text, marginBottom: 14 }}>Security Settings</Text>
+                <View style={{ gap: 12 }}>
+                  <View>
+                    <Label>Biometric Login</Label>
+                    <Text style={{ fontSize: 13, color: C.textSecondary, marginBottom: 12 }}>
+                      {biometricEnabled 
+                        ? `✓ ${biometricType === "faceId" ? "Face ID" : biometricType === "iris" ? "Iris" : "Fingerprint"} is enabled for quick login`
+                        : `Set up ${biometricType === "faceId" ? "Face ID" : biometricType === "iris" ? "Iris" : "Fingerprint"} for faster, secure access`
+                      }
+                    </Text>
+                  </View>
+                  <View style={{ flexDirection: "row", gap: 10 }}>
+                    {biometricEnabled ? (
+                      <>
+                        <Btn onPress={() => handleToggleBiometric(false)} style={{ flex: 1, backgroundColor: C.danger }}>
+                          <Icon name="lock-off" size={16} color="#fff" />
+                          <BtnText>Disable {biometricType === "faceId" ? "Face ID" : "Fingerprint"}</BtnText>
+                        </Btn>
+                      </>
+                    ) : (
+                      <>
+                        <Btn onPress={() => handleToggleBiometric(true)} style={{ flex: 1, backgroundColor: C.success }}>
+                          <Icon name="fingerprint" size={16} color="#fff" />
+                          <BtnText>Enable {biometricType === "faceId" ? "Face ID" : "Fingerprint"}</BtnText>
+                        </Btn>
+                      </>
+                    )}
+                  </View>
+                </View>
+              </Card>
+            )}
 
             {/* Order stats */}
             <Card>
