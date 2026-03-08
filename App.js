@@ -61,6 +61,7 @@ const Icon = ({ name, size = 20, color = C.textSecondary }) => {
     map: "M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7",
     clock: "M12 6v6l4 2",
     star: "M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z",
+    chart: "M3 13h2v8H3zm4-8h2v16H7zm4-2h2v18h-2zm4 4h2v14h-2zm4-1h2v15h-2z",
   };
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -190,6 +191,67 @@ const SMS_TEMPLATES = {
   delivered: "Sol Cleaners: Your order {order} has been delivered! Thank you for choosing Sol Cleaners!",
 };
 
+// ─── Reporting Utilities ───
+const getDateRange = (timeframe) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let startDate = new Date(today);
+
+  if (timeframe === "weekly") {
+    const day = today.getDay();
+    startDate.setDate(today.getDate() - day); // Start of week (Sunday)
+  } else if (timeframe === "monthly") {
+    startDate.setDate(1); // Start of month
+  } else if (timeframe === "yearly") {
+    startDate.setMonth(0, 1); // Start of year
+  }
+
+  const endDate = new Date(today);
+  endDate.setHours(23, 59, 59, 999);
+
+  return {
+    startDate: startDate.toISOString().split("T")[0],
+    endDate: endDate.toISOString().split("T")[0],
+    displayName: timeframe === "weekly" ? "This Week" : timeframe === "monthly" ? "This Month" : "This Year",
+  };
+};
+
+const getReportData = (orders, timeframe) => {
+  const { startDate, endDate } = getDateRange(timeframe);
+  const filteredOrders = orders.filter(o => o.created >= startDate && o.created <= endDate);
+  
+  const statusCounts = {
+    pending: 0,
+    confirmed: 0,
+    pickup_scheduled: 0,
+    picked_up: 0,
+    processing: 0,
+    ready: 0,
+    out_for_delivery: 0,
+    delivered: 0,
+    cancelled: 0,
+  };
+
+  filteredOrders.forEach(o => {
+    if (statusCounts.hasOwnProperty(o.status)) {
+      statusCounts[o.status]++;
+    }
+  });
+
+  const totalOrders = filteredOrders.length;
+  const completedOrders = statusCounts.delivered || 0;
+  const totalItems = filteredOrders.reduce((sum, o) => sum + (o.num_items || 0), 0);
+
+  return {
+    orders: filteredOrders,
+    statusCounts,
+    totalOrders,
+    completedOrders,
+    totalItems,
+    periodName: getDateRange(timeframe).displayName,
+  };
+};
+
 const ADMIN_ACCOUNTS = [
   { email: "admin@solcleanersinc.com", password: "SolAdmin2026!", name: "Sol Admin", role: "admin" },
   { email: "driver@solcleanersinc.com", password: "SolDriver2026!", name: "Driver One", role: "driver" },
@@ -249,6 +311,9 @@ export default function App() {
   // ─── Admin Hidden Access ───
   const [adminTapCount, setAdminTapCount] = useState(0);
   const [showAdminButton, setShowAdminButton] = useState(false);
+
+  // ─── Reporting ───
+  const [reportTimeframe, setReportTimeframe] = useState("weekly"); // "weekly" | "monthly" | "yearly"
 
   // Auto-login: check for saved customer on app launch
   useEffect(() => {
@@ -334,6 +399,52 @@ export default function App() {
 
     return unsubscribe;
   }, [supabaseReady, orders]);
+
+  // Reset admin reveal when leaving splash screen
+  useEffect(() => {
+    if (mode !== null) {
+      setShowAdminButton(false);
+      setAdminTapCount(0);
+    }
+  }, [mode]);
+
+  // Ensure admin button is ALWAYS hidden in customer/admin modes
+  useEffect(() => {
+    if (mode === "customer" || mode === "admin") {
+      setShowAdminButton(false);
+      setAdminTapCount(0);
+    }
+  }, [mode, screen]);
+
+  // Sync orders when entering admin mode
+  useEffect(() => {
+    if (mode === "admin" && adminLoggedIn && isOnline && supabaseReady) {
+      const syncAdminOrders = async () => {
+        try {
+          setIsSyncing(true);
+          // Sync any pending local orders first
+          const localOrders = await storage.getOrders();
+          if (localOrders && localOrders.length > 0) {
+            await syncOrdersWithSupabase(localOrders);
+            logger.info("Pending orders synced before admin reload", { count: localOrders.length });
+          }
+          
+          // Reload all orders from Supabase
+          const { data: freshOrders, error } = await getAllOrders();
+          if (!error && freshOrders) {
+            setOrders(freshOrders);
+            await storage.saveOrders(freshOrders);
+            logger.info("Fresh orders loaded for admin", { count: freshOrders.length });
+          }
+        } catch (e) {
+          logger.error("Admin sync error", { error: e.message });
+        } finally {
+          setIsSyncing(false);
+        }
+      };
+      syncAdminOrders();
+    }
+  }, [mode, adminLoggedIn]);
 
   const loadCustomer = async () => {
     try {
@@ -519,6 +630,7 @@ export default function App() {
     setCustLoggedIn(false);
     setCustName(""); setCustPhone(""); setCustEmail(""); setCustPassword("");
     setCustAddress(""); setCustCity("Sharon"); setCustZip("02067");
+    setShowAdminButton(false); setAdminTapCount(0); // Hide admin button when returning to splash
     setMode(null); setScreen("home");
   };
 
@@ -558,6 +670,10 @@ export default function App() {
 
   const handleAutoLogin = async () => {
     try {
+      // Hide admin button when leaving splash screen
+      setShowAdminButton(false);
+      setAdminTapCount(0);
+
       const creds = await storage.getCustomerCredentials();
       if (creds && creds.email && creds.password) {
         // Auto-login with saved creds
@@ -838,16 +954,42 @@ export default function App() {
 
   const handleAdminLogin = () => {
     setAdminLoginError(""); setAdminLoginLoading(true);
-    setTimeout(() => {
+    setTimeout(async () => {
       const found = ADMIN_ACCOUNTS.find(a => a.email.toLowerCase() === adminEmail.toLowerCase().trim() && a.password === adminPassword);
-      if (found) { setAdminLoggedIn(true); setAdminUser(found); setScreen("admin-orders"); }
+      if (found) { 
+        setAdminLoggedIn(true); 
+        setAdminUser(found); 
+        setScreen("admin-orders");
+        
+        // Sync orders immediately after admin login
+        if (isOnline && supabaseReady) {
+          try {
+            setIsSyncing(true);
+            const localOrders = await storage.getOrders();
+            if (localOrders && localOrders.length > 0) {
+              await syncOrdersWithSupabase(localOrders);
+              logger.info("Pending orders synced on admin login", { count: localOrders.length });
+            }
+            const { data: freshOrders, error } = await getAllOrders();
+            if (!error && freshOrders) {
+              setOrders(freshOrders);
+              await storage.saveOrders(freshOrders);
+              logger.info("Fresh orders loaded on admin login", { count: freshOrders.length });
+            }
+          } catch (e) {
+            logger.error("Sync on admin login failed", { error: e.message });
+          } finally {
+            setIsSyncing(false);
+          }
+        }
+      }
       else { setAdminLoginError("Invalid email or password."); }
       setAdminLoginLoading(false);
     }, 800);
   };
 
   const handleAdminLogout = () => {
-    setAdminLoggedIn(false); setAdminUser(null); setAdminEmail(""); setAdminPassword(""); setMode(null); setScreen("home");
+    setAdminLoggedIn(false); setAdminUser(null); setAdminEmail(""); setAdminPassword(""); setShowAdminButton(false); setAdminTapCount(0); setMode(null); setScreen("home");
   };
 
   const optimizeRoute = async () => {
@@ -1394,11 +1536,6 @@ export default function App() {
           <Text style={{ color: "rgba(255,255,255,0.9)", fontSize: 16, fontWeight: "700", marginBottom: 12 }}>Welcome, {custName}!</Text>
           <View style={{ flexDirection: "row", alignItems: "center", width: "100%", marginBottom: 8, justifyContent: "center" }}>
             <SolLogo size={18} dark />
-            <TouchableOpacity onPress={() => { setMode("admin"); setScreen("admin-orders"); }}
-              style={{ position: "absolute", right: 16, backgroundColor: "rgba(255,255,255,0.1)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, flexDirection: "row", alignItems: "center", gap: 5 }}>
-              <Icon name="settings" size={13} color="rgba(255,255,255,0.7)" />
-              <Text style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", fontWeight: "600" }}>Admin</Text>
-            </TouchableOpacity>
           </View>
           <Text style={{ color: "rgba(255,255,255,0.8)", fontSize: 13 }}>Eco-Friendly Dry Cleaning • Sharon, MA</Text>
         </Header>
@@ -1453,7 +1590,12 @@ export default function App() {
   // ═══════════════════════════════════════
   if (mode === "admin") {
     const t = useTranslation(language);
-    const adminNav = [{ icon: "order", label: t("orders"), scr: "admin-orders" }, { icon: "route", label: t("routes"), scr: "admin-routes" }, { icon: "settings", label: t("settings"), scr: "admin-settings" }];
+    const adminNav = [
+      { icon: "order", label: t("orders"), scr: "admin-orders" }, 
+      { icon: "route", label: t("routes"), scr: "admin-routes" }, 
+      ...(adminUser?.role === "admin" || adminUser?.role === "manager" ? [{ icon: "chart", label: "Reports", scr: "admin-reports" }] : []),
+      { icon: "settings", label: t("settings"), scr: "admin-settings" }
+    ];
     // ─── Admin Login ───
     if (!adminLoggedIn) {
       return (
@@ -1759,6 +1901,97 @@ export default function App() {
                   <Text style={{ fontSize: 14, fontWeight: "700", color: C.primary }}>Sol Cleaners — RETURN</Text>
                   <Text style={{ fontSize: 12, color: C.textSecondary }}>5 Post Office Sq #10, Sharon, MA 02067</Text>
                 </View>
+              </Card>
+            )}
+          </ScrollView>
+          <NavBar screen={screen} items={adminNav} onPress={setScreen} />
+        </Screen>
+      );
+    }
+
+    // ─── Reports ───
+    if (screen === "admin-reports") {
+      const reportData = getReportData(orders, reportTimeframe);
+      const timeframeOptions = ["weekly", "monthly", "yearly"];
+
+      return (
+        <Screen>
+          <Header><View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700" }}>Reports</Text></View></Header>
+          <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 160 }}>
+            {/* Timeframe Selector */}
+            <Card style={{ backgroundColor: C.accentLight, borderColor: C.accent + "30" }}>
+              <Text style={{ fontSize: 13, fontWeight: "700", color: "#3A6090", marginBottom: 12 }}>Select Timeframe</Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {timeframeOptions.map(tf => (
+                  <TouchableOpacity
+                    key={tf}
+                    onPress={() => setReportTimeframe(tf)}
+                    style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, backgroundColor: reportTimeframe === tf ? C.accent : "#fff", alignItems: "center", borderWidth: 1.5, borderColor: reportTimeframe === tf ? C.accent : C.border }}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: "700", color: reportTimeframe === tf ? "#fff" : C.text, textTransform: "capitalize" }}>{tf}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </Card>
+
+            {/* Summary Statistics */}
+            <Card>
+              <Text style={{ fontSize: 14, fontWeight: "700", color: C.text, marginBottom: 16 }}>{reportData.periodName} Summary</Text>
+              <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+                <View style={{ flex: 1, backgroundColor: C.primaryLight, borderRadius: 12, padding: 14, alignItems: "center" }}>
+                  <Text style={{ fontSize: 20, fontWeight: "800", color: C.primary }}>{reportData.totalOrders}</Text>
+                  <Text style={{ fontSize: 11, color: C.textSecondary, fontWeight: "600", marginTop: 2 }}>Total Orders</Text>
+                </View>
+                <View style={{ flex: 1, backgroundColor: C.successLight, borderRadius: 12, padding: 14, alignItems: "center" }}>
+                  <Text style={{ fontSize: 20, fontWeight: "800", color: C.success }}>{reportData.completedOrders}</Text>
+                  <Text style={{ fontSize: 11, color: C.textSecondary, fontWeight: "600", marginTop: 2 }}>Completed</Text>
+                </View>
+                <View style={{ flex: 1, backgroundColor: C.accentLight, borderRadius: 12, padding: 14, alignItems: "center" }}>
+                  <Text style={{ fontSize: 20, fontWeight: "800", color: C.accent }}>{reportData.totalItems}</Text>
+                  <Text style={{ fontSize: 11, color: C.textSecondary, fontWeight: "600", marginTop: 2 }}>Items</Text>
+                </View>
+              </View>
+            </Card>
+
+            {/* Order Status Breakdown */}
+            <Card>
+              <Text style={{ fontSize: 14, fontWeight: "700", color: C.text, marginBottom: 14 }}>Order Status Breakdown</Text>
+              {Object.entries(reportData.statusCounts).map(([status, count]) => (
+                <View key={status} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.borderLight }}>
+                  <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }}>
+                    <StatusBadge status={status} />
+                  </View>
+                  <Text style={{ fontSize: 14, fontWeight: "700", color: count > 0 ? C.primary : C.textMuted }}>{count}</Text>
+                </View>
+              ))}
+            </Card>
+
+            {/* Completion Rate */}
+            {reportData.totalOrders > 0 && (
+              <Card style={{ backgroundColor: C.successLight, borderColor: C.success + "30" }}>
+                <Text style={{ fontSize: 13, fontWeight: "700", color: C.success, marginBottom: 8 }}>Completion Rate</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                  <View style={{ flex: 1, height: 8, backgroundColor: "rgba(39, 174, 96, 0.2)", borderRadius: 4, overflow: "hidden" }}>
+                    <View
+                      style={{
+                        height: "100%",
+                        backgroundColor: C.success,
+                        width: `${(reportData.completedOrders / reportData.totalOrders) * 100}%`,
+                      }}
+                    />
+                  </View>
+                  <Text style={{ fontSize: 14, fontWeight: "700", color: C.success }}>
+                    {Math.round((reportData.completedOrders / reportData.totalOrders) * 100)}%
+                  </Text>
+                </View>
+              </Card>
+            )}
+
+            {/* No Data Message */}
+            {reportData.totalOrders === 0 && (
+              <Card style={{ alignItems: "center", paddingVertical: 40 }}>
+                <Icon name="chart" size={32} color={C.textMuted} />
+                <Text style={{ fontSize: 14, color: C.textMuted, marginTop: 12 }}>No orders in this period</Text>
               </Card>
             )}
           </ScrollView>
