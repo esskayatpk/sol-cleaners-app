@@ -688,8 +688,10 @@ export default function App() {
       return;
     }
     const itemDesc = Object.entries(items).map(([k, v]) => `${v}x ${ITEM_TYPES.find(t => t.key === k)?.label}`).join(", ");
+    // Generate unique order_number by finding max existing and incrementing
+    const nextOrderNumber = Math.max(...orders.map(o => o.order_number || 1000), 1000) + 1;
     const newOrder = {
-      id: `ord-${Date.now()}`, order_number: 1000 + orders.length + 1, customer_name: custName,
+      id: `ord-${Date.now()}`, order_number: nextOrderNumber, customer_name: custName,
       phone: custPhone, address: `${custAddress}, ${custCity}, MA ${custZip}`,
       lat: 42.12 + Math.random() * 0.02, lng: -71.17 - Math.random() * 0.02,
       num_items: totalItems, note: `${itemDesc}${note ? ` — ${note}` : ""}`,
