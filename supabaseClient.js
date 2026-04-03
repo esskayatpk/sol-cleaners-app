@@ -365,7 +365,35 @@ export const getAllOrders = async () => {
 
 /**
  * Get customer's orders
- * @param {string} userId - Supabase auth uid\n */\nexport const getCustomerOrders = async (userId) => {\n  try {\n    // For sol-pos-linked customers, orders are stored under the original customers.id,\n    // not the auth uid. Resolve the actual customer row id first.\n    let customerId = userId;\n    const { data: profile } = await supabase\n      .from('customers')\n      .select('id')\n      .or(`auth_user_id.eq.${userId},id.eq.${userId}`)\n      .maybeSingle();\n    if (profile?.id) customerId = profile.id;\n\n    const { data, error } = await supabase\n      .from('orders')\n      .select('*')\n      .eq('customer_id', customerId)\n      .order('created', { ascending: false });\n\n    if (error) throw error;\n\n    logger.info('Customer orders fetched from Supabase', { userId, customerId, count: data.length });\n    return { data, error: null };\n  } catch (e) {\n    logger.error('Failed to fetch customer orders', { error: e.message });\n    return { data: null, error: e.message };\n  }\n};
+ * @param {string} userId - Supabase auth uid
+ */
+export const getCustomerOrders = async (userId) => {
+  try {
+    // For sol-pos-linked customers, orders are stored under the original customers.id,
+    // not the auth uid. Resolve the actual customer row id first.
+    let customerId = userId;
+    const { data: profile } = await supabase
+      .from('customers')
+      .select('id')
+      .or(`auth_user_id.eq.${userId},id.eq.${userId}`)
+      .maybeSingle();
+    if (profile?.id) customerId = profile.id;
+
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('customer_id', customerId)
+      .order('created', { ascending: false });
+
+    if (error) throw error;
+
+    logger.info('Customer orders fetched from Supabase', { userId, customerId, count: data.length });
+    return { data, error: null };
+  } catch (e) {
+    logger.error('Failed to fetch customer orders', { error: e.message });
+    return { data: null, error: e.message };
+  }
+};
 
 /**
  * Update order status
@@ -387,6 +415,38 @@ export const updateOrderStatus = async (orderId, newStatus) => {
     return { data, error: null };
   } catch (e) {
     logger.error('Failed to update order status', { error: e.message });
+    return { data: null, error: e.message };
+  }
+};
+
+/**
+ * Soft-cancel an order: sets status='cancelled', records reason and timestamps.
+ * deleted_at marks it as soft-deleted so the POS can filter/display accordingly.
+ * @param {string} orderId
+ * @param {string} reason - customer-provided cancellation reason
+ */
+export const cancelOrder = async (orderId, reason) => {
+  try {
+    const now = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('orders')
+      .update({
+        status: 'cancelled',
+        cancellation_reason: reason || null,
+        cancelled_at: now,
+        deleted_at: now,
+        updated_at: now,
+      })
+      .eq('id', orderId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    logger.info('Order cancelled', { orderId, reason });
+    return { data, error: null };
+  } catch (e) {
+    logger.error('Failed to cancel order', { error: e.message });
     return { data: null, error: e.message };
   }
 };

@@ -24,6 +24,7 @@ import {
   syncOrdersWithSupabase,
   testSupabaseConnection,
   logSMS,
+  cancelOrder,
 } from "./supabaseClient"; // Supabase for cloud storage
 import { subscribeToNetworkChanges, isAppOnline, checkNetworkStatus } from "./networkStatus"; // Network monitoring
 import * as LocalAuthentication from "expo-local-authentication";
@@ -281,6 +282,9 @@ export default function App() {
   const [screen, setScreen] = useState("home");
   const [orders, setOrders] = useState(mockOrders);
   const [custOrders, setCustOrders] = useState([]);
+  const [cancelModal, setCancelModal] = useState(null); // { orderId, orderNumber } | null
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelLoading, setCancelLoading] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [routeOptimized, setRouteOptimized] = useState(false);
@@ -1850,7 +1854,7 @@ export default function App() {
                 <Text style={{ fontSize: 12, color: C.textMuted, marginTop: 4 }}>{o.num_items} items • {o.address}</Text>
                 <Text style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>{o.payment_method === "credit_card" ? "💳 Credit Card" : "💵 Pay on Delivery"}</Text>
                 <Text style={{ fontSize: 11, color: C.textMuted, marginTop: 4, lineHeight: 16 }}>{o.note}</Text>
-                {!["picked_up", "processing", "delivered", "cancelled"].includes(o.status) && (
+                {!['picked_up', 'processing', 'delivered', 'cancelled'].includes(o.status) && (
                   <Btn onPress={() => {
                     // Load order data into form for editing
                     setEditingOrderId(o.id);
@@ -1896,9 +1900,75 @@ export default function App() {
                     <Icon name="edit" size={16} color="#fff" /><BtnText>Edit Order</BtnText>
                   </Btn>
                 )}
+                {!['picked_up', 'processing', 'delivered', 'cancelled'].includes(o.status) && (
+                  <Btn onPress={() => { setCancelModal({ orderId: o.id, orderNumber: o.order_number }); setCancelReason(""); }}
+                    style={{ marginTop: 8, backgroundColor: C.danger, alignItems: "center", justifyContent: "center" }}>
+                    <BtnText>Cancel Order</BtnText>
+                  </Btn>
+                )}
               </Card>
             ))}
           </ScrollView>
+          {/* ── Cancel Order Modal ── */}
+          {cancelModal && (
+            <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", alignItems: "center", padding: 24 }}>
+              <View style={{ backgroundColor: "#fff", borderRadius: 16, padding: 24, width: "100%", shadowColor: "#000", shadowOpacity: 0.2, shadowRadius: 12, elevation: 8 }}>
+                <Text style={{ fontSize: 17, fontWeight: "700", color: C.text, marginBottom: 6 }}>Cancel Order #{cancelModal.orderNumber}?</Text>
+                <Text style={{ fontSize: 13, color: C.textSecondary, marginBottom: 16 }}>This cannot be undone. Please let us know why you're cancelling.</Text>
+                <TextInput
+                  value={cancelReason}
+                  onChangeText={setCancelReason}
+                  placeholder="Reason for cancellation (required)"
+                  placeholderTextColor={C.textMuted}
+                  multiline
+                  numberOfLines={3}
+                  style={{ borderWidth: 1, borderColor: C.border, borderRadius: 10, padding: 12, fontSize: 14, color: C.text, minHeight: 80, textAlignVertical: "top", marginBottom: 20 }}
+                />
+                <View style={{ flexDirection: "row", gap: 12 }}>
+                  <Btn onPress={() => setCancelModal(null)} style={{ flex: 1, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border }}>
+                    <BtnText style={{ color: C.text }}>Go Back</BtnText>
+                  </Btn>
+                  <Btn
+                    onPress={async () => {
+                      if (!cancelReason.trim()) {
+                        Alert.alert("Reason required", "Please enter a reason for cancellation.");
+                        return;
+                      }
+                      setCancelLoading(true);
+                      try {
+                        const now = new Date().toISOString();
+                        const updatedOrders = orders.map(o =>
+                          o.id === cancelModal.orderId
+                            ? { ...o, status: "cancelled", cancellation_reason: cancelReason.trim(), cancelled_at: now, deleted_at: now }
+                            : o
+                        );
+                        setOrders(updatedOrders);
+                        setCustOrders(updatedOrders.filter(o => o.customer_name === custName || o.phone === custPhone));
+                        await storage.saveOrders(updatedOrders);
+                        if (isOnline && supabaseReady) {
+                          const { error } = await cancelOrder(cancelModal.orderId, cancelReason.trim());
+                          if (error) logger.warn("Cancel synced locally but Supabase update failed", { error });
+                          else logger.info("Order cancelled and synced to Supabase", { orderId: cancelModal.orderId });
+                        }
+                        setCancelModal(null);
+                        setCancelReason("");
+                        Alert.alert("Order Cancelled", "Your order has been cancelled.");
+                      } catch (e) {
+                        logger.error("Cancel order error", { error: e.message });
+                        Alert.alert("Error", "Could not cancel order. Please try again.");
+                      } finally {
+                        setCancelLoading(false);
+                      }
+                    }}
+                    style={{ flex: 1, backgroundColor: C.danger }}
+                    disabled={cancelLoading}
+                  >
+                    <BtnText>{cancelLoading ? "Cancelling..." : "Yes, Cancel"}</BtnText>
+                  </Btn>
+                </View>
+              </View>
+            </View>
+          )}
           <NavBar screen={screen} items={custNav} onPress={setScreen} />
         </Screen>
       );
