@@ -120,15 +120,72 @@ export const logoutCustomer = async () => {
 export const getCurrentUser = async () => {
   try {
     const { data, error } = await supabase.auth.getUser();
-    if (error) throw error;
-    return data.user;
+    // "Auth session missing" is not a real error — user is simply not signed in via Supabase
+    if (error) {
+      logger.warn('No active Supabase session', { error: error.message });
+      return null;
+    }
+    return data.user ?? null;
   } catch (e) {
-    logger.error('Failed to get current user', { error: e.message });
+    logger.warn('Failed to get current user', { error: e.message });
     return null;
   }
 };
 
 // ─── Customer Profile Functions ───
+
+/**
+ * Look up an existing customer by phone number (e.g. created in sol-pos).
+ * Returns the first match or null.
+ * @param {string} phone
+ */
+export const findCustomerByPhone = async (phone) => {
+  try {
+    const { data, error } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('phone', phone)
+      .maybeSingle();
+
+    if (error) throw error;
+    return { data, error: null };
+  } catch (e) {
+    logger.warn('findCustomerByPhone failed', { error: e.message });
+    return { data: null, error: e.message };
+  }
+};
+
+/**
+ * Link an existing sol-pos customer row to a new Supabase auth user
+ * by setting auth_user_id. The customer's original id (and all FK
+ * references from orders) is left untouched.
+ * @param {string} existingCustomerId - current row id in customers table
+ * @param {string} newUserId - new Supabase auth uid
+ * @param {Object} profileData - { email, address, city, zip }
+ */
+export const setCustomerAuthId = async (existingCustomerId, newUserId, profileData) => {
+  try {
+    const { data, error } = await supabase
+      .from('customers')
+      .update({
+        auth_user_id: newUserId,
+        email: profileData.email,
+        address: profileData.address,
+        city: profileData.city,
+        zip: profileData.zip,
+      })
+      .eq('id', existingCustomerId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    logger.info('auth_user_id linked to existing sol-pos customer', { newUserId, existingCustomerId });
+    return { data, error: null };
+  } catch (e) {
+    logger.error('Failed to set auth_user_id on customer', { error: e.message });
+    return { data: null, error: e.message };
+  }
+};
 
 /**
  * Create customer profile in database
@@ -137,44 +194,63 @@ export const getCurrentUser = async () => {
  */
 export const createCustomerProfile = async (userId, profileData) => {
   try {
+    // Use upsert so we don't duplicate a customer that already exists in sol-pos.
+    // onConflict:'id' — if the row exists, update name/phone/address but leave
+    // any sol-pos-only columns untouched.
     const { data, error } = await supabase
       .from('customers')
-      .insert([{
+      .upsert([{
         id: userId,
+        auth_user_id: userId,   // for new app-registered customers, both ids match
         email: profileData.email,
         name: profileData.name,
         phone: profileData.phone,
         address: profileData.address,
         city: profileData.city,
         zip: profileData.zip,
-      }])
+      }], { onConflict: 'id' })
       .select()
       .single();
 
     if (error) throw error;
 
-    logger.info('Customer profile created in Supabase', { userId });
+    logger.info('Customer profile upserted in Supabase', { userId });
     return { data, error: null };
   } catch (e) {
-    logger.error('Failed to create customer profile', { error: e.message });
+    logger.error('Failed to upsert customer profile', { error: e.message });
     return { data: null, error: e.message };
   }
 };
 
 /**
- * Get customer profile
- * @param {string} userId
+ * Get customer profile.
+ * For sol-pos customers the auth uid sits in auth_user_id, not id.
+ * We try auth_user_id first, then fall back to id.
+ * @param {string} userId - Supabase auth uid
  */
 export const getCustomerProfile = async (userId) => {
   try {
-    const { data, error } = await supabase
+    // Try auth_user_id match first (sol-pos linked customers)
+    let { data, error } = await supabase
       .from('customers')
       .select('*')
-      .eq('id', userId)
-      .single();
+      .eq('auth_user_id', userId)
+      .maybeSingle();
 
     if (error) throw error;
 
+    // Fall back to id match (new app-only customers where id === auth uid)
+    if (!data) {
+      const res = await supabase
+        .from('customers')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle();
+      if (res.error) throw res.error;
+      data = res.data;
+    }
+
+    if (!data) return { data: null, error: 'Profile not found' };
     return { data, error: null };
   } catch (e) {
     logger.warn('Failed to get customer profile', { error: e.message });
@@ -189,14 +265,28 @@ export const getCustomerProfile = async (userId) => {
  */
 export const updateCustomerProfile = async (userId, updates) => {
   try {
-    const { data, error } = await supabase
+    // Prefer matching on auth_user_id so sol-pos-linked customers are found correctly.
+    // Try auth_user_id first; if no row updated, fall back to id.
+    let { data, error } = await supabase
       .from('customers')
       .update(updates)
-      .eq('id', userId)
+      .eq('auth_user_id', userId)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+
+    if (!data) {
+      // New app-only customer where id === auth uid
+      const res = await supabase
+        .from('customers')
+        .update(updates)
+        .eq('id', userId)
+        .select()
+        .single();
+      if (res.error) throw res.error;
+      data = res.data;
+    }
 
     logger.info('Customer profile updated in Supabase', { userId });
     return { data, error: null };
@@ -207,6 +297,29 @@ export const updateCustomerProfile = async (userId, updates) => {
 };
 
 // ─── Order Functions ───
+
+/**
+ * Get the next available order_number (max in DB + 1).
+ * Falls back to the provided localMax if offline or on error.
+ * @param {number} localMax - highest order_number known locally
+ */
+export const getNextOrderNumber = async (localMax = 1000) => {
+  try {
+    const { data, error } = await supabase
+      .from('orders')
+      .select('order_number')
+      .order('order_number', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error && error.code !== 'PGRST116') throw error; // PGRST116 = no rows
+    const dbMax = data?.order_number ?? 0;
+    return Math.max(dbMax, localMax) + 1;
+  } catch (e) {
+    logger.warn('Could not fetch max order_number from Supabase, using local', { error: e.message });
+    return localMax + 1;
+  }
+};
 
 /**
  * Create new order
@@ -252,25 +365,7 @@ export const getAllOrders = async () => {
 
 /**
  * Get customer's orders
- * @param {string} userId
- */
-export const getCustomerOrders = async (userId) => {
-  try {
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('customer_id', userId)
-      .order('created', { ascending: false });
-
-    if (error) throw error;
-
-    logger.info('Customer orders fetched from Supabase', { userId, count: data.length });
-    return { data, error: null };
-  } catch (e) {
-    logger.error('Failed to fetch customer orders', { error: e.message });
-    return { data: null, error: e.message };
-  }
-};
+ * @param {string} userId - Supabase auth uid\n */\nexport const getCustomerOrders = async (userId) => {\n  try {\n    // For sol-pos-linked customers, orders are stored under the original customers.id,\n    // not the auth uid. Resolve the actual customer row id first.\n    let customerId = userId;\n    const { data: profile } = await supabase\n      .from('customers')\n      .select('id')\n      .or(`auth_user_id.eq.${userId},id.eq.${userId}`)\n      .maybeSingle();\n    if (profile?.id) customerId = profile.id;\n\n    const { data, error } = await supabase\n      .from('orders')\n      .select('*')\n      .eq('customer_id', customerId)\n      .order('created', { ascending: false });\n\n    if (error) throw error;\n\n    logger.info('Customer orders fetched from Supabase', { userId, customerId, count: data.length });\n    return { data, error: null };\n  } catch (e) {\n    logger.error('Failed to fetch customer orders', { error: e.message });\n    return { data: null, error: e.message };\n  }\n};
 
 /**
  * Update order status

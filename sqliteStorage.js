@@ -235,6 +235,40 @@ class SQLiteStorage {
     }
   }
 
+  // ─── Admin Login Tracking ───
+
+  async getLastAdminLogin() {
+    try {
+      const value = await this._getStoredValue("sol_last_admin_login");
+      return value ? new Date(value) : null;
+    } catch (e) {
+      logger.error("Failed to get last admin login", { error: e.message });
+      return null;
+    }
+  }
+
+  async setLastAdminLogin(timestamp) {
+    try {
+      const isoString = timestamp instanceof Date ? timestamp.toISOString() : timestamp;
+      await this._setStoredValue("sol_last_admin_login", isoString);
+      logger.info("Last admin login saved", { timestamp: isoString });
+      return true;
+    } catch (e) {
+      logger.error("Failed to save last admin login", { error: e.message });
+      return false;
+    }
+  }
+
+  async clearLastAdminLogin() {
+    try {
+      await this._removeStoredValue("sol_last_admin_login");
+      return true;
+    } catch (e) {
+      logger.error("Failed to clear last admin login", { error: e.message });
+      return false;
+    }
+  }
+
   // ─── Orders Operations ───
 
   async getOrders() {

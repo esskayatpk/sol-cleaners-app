@@ -9,7 +9,11 @@ import {
   registerCustomer, 
   loginCustomer, 
   logoutCustomer,
-  createOrder, 
+  getCurrentUser,
+  createOrder,
+  getNextOrderNumber,
+  findCustomerByPhone,
+  setCustomerAuthId,
   getAllOrders, 
   getCustomerOrders,
   updateOrderStatus as updateOrderStatusSupabase, 
@@ -158,18 +162,28 @@ const ITEM_TYPES = [
 const WEEKDAY_TIME_SLOTS = ["6:00 PM - 7:00 PM", "7:00 PM - 8:00 PM"];
 const WEEKEND_TIME_SLOTS = ["4:00 PM - 5:00 PM", "5:00 PM - 6:00 PM", "6:00 PM - 7:00 PM"];
 
-function getNextDays(count = 10) {
-  const days = []; const d = new Date(2026, 2, 2);
-  for (let i = 0; i < count; i++) {
-    const c = new Date(d); c.setDate(d.getDate() + i);
-    const dow = c.getDay();
-    if (dow === 0) { i++; continue; } // skip Sundays
-    const isWeekend = dow === 6; // Saturday
-    days.push({
-      date: c.toISOString().split("T")[0],
-      label: c.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }),
-      isWeekend,
-    });
+function getNextDays() {
+  const days = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  // Find Monday of current week
+  const dow = today.getDay();
+  const mondayOffset = dow === 0 ? -6 : 1 - dow;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() + mondayOffset);
+  // Show current week (Mon-Sat) + next week (Mon-Sat), skipping past dates
+  for (let week = 0; week < 2; week++) {
+    for (let d = 0; d < 6; d++) {
+      const c = new Date(monday);
+      c.setDate(monday.getDate() + week * 7 + d);
+      if (c < today) continue;
+      const isWeekend = c.getDay() === 6;
+      days.push({
+        date: c.toISOString().split("T")[0],
+        label: c.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }),
+        isWeekend,
+      });
+    }
   }
   return days;
 }
@@ -266,6 +280,7 @@ export default function App() {
   const [mode, setMode] = useState(null);
   const [screen, setScreen] = useState("home");
   const [orders, setOrders] = useState(mockOrders);
+  const [custOrders, setCustOrders] = useState([]);
   const [orderSuccess, setOrderSuccess] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [routeOptimized, setRouteOptimized] = useState(false);
@@ -278,6 +293,7 @@ export default function App() {
   const [adminShowPassword, setAdminShowPassword] = useState(false);
   const [adminLoginLoading, setAdminLoginLoading] = useState(false);
   const [adminUser, setAdminUser] = useState(null);
+  const [lastAdminLogin, setLastAdminLogin] = useState(null); // stores last login timestamp
   const [items, setItems] = useState({});
   const [note, setNote] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("on_delivery"); // "on_delivery" | "credit_card"
@@ -552,21 +568,39 @@ export default function App() {
         if (error) {
           setCustLoginError(error);
           logger.warn("Supabase registration failed, trying local", { error });
-        } else if (user) {
-          // Create customer profile in Supabase
-          const { error: profileError } = await createCustomerProfile(user.id, {
-            email: custEmail,
-            name: custName,
-            phone: custPhone,
-            address: custAddress,
-            city: custCity,
-            zip: custZip,
-          });
+          return; // stop here — don't save locally with a bad registration
+        }
 
-          if (profileError) {
-            logger.warn("Failed to create Supabase profile", { error: profileError });
+        if (user) {
+          // Check if this phone number already exists in the customers table
+          // (e.g. the customer was added manually in sol-pos).
+          const { data: existingCustomer } = await findCustomerByPhone(custPhone);
+
+          if (existingCustomer && existingCustomer.auth_user_id !== user.id) {
+            // Phone matched a sol-pos record — set auth_user_id on that row.
+            // We do NOT change customers.id so existing orders FK references are preserved.
+            const { error: linkError } = await setCustomerAuthId(
+              existingCustomer.id,
+              user.id,
+              { email: custEmail, address: custAddress, city: custCity, zip: custZip }
+            );
+            if (linkError) {
+              logger.warn("Could not link to existing sol-pos customer, creating new profile", { error: linkError });
+              await createCustomerProfile(user.id, { email: custEmail, name: custName, phone: custPhone, address: custAddress, city: custCity, zip: custZip });
+            } else {
+              logger.info("Linked new app user to existing sol-pos customer", { phone: custPhone });
+            }
           } else {
-            logger.info("Customer registered with Supabase", { email: custEmail });
+            // Brand new customer — create a fresh profile
+            const { error: profileError } = await createCustomerProfile(user.id, {
+              email: custEmail, name: custName, phone: custPhone,
+              address: custAddress, city: custCity, zip: custZip,
+            });
+            if (profileError) {
+              logger.warn("Failed to create Supabase profile", { error: profileError });
+            } else {
+              logger.info("Customer registered with Supabase", { email: custEmail });
+            }
           }
         }
       }
@@ -600,10 +634,13 @@ export default function App() {
         
         if (!error && user) {
           // Get customer profile from Supabase
-          const { profile, error: profileError } = await getCustomerProfile(user.id);
+          const { data: profile, error: profileError } = await getCustomerProfile(user.id);
           if (profile && !profileError) {
             customerProfile = profile;
             loginSuccess = true;
+            // Refresh local cache so offline access stays current
+            await storage.saveCustomer(profile);
+            await storage.saveCustomerCredentials(custEmail, custPassword);
             logger.info("Customer login successful via Supabase", { email: custEmail });
           } else {
             logger.warn("Failed to fetch Supabase profile, trying local", { error: profileError });
@@ -710,6 +747,49 @@ export default function App() {
     }
   };
 
+  // Refresh the customer's own orders from Supabase (picks up status changes made in sol-pos)
+  const refreshCustOrders = async () => {
+    // Always show local orders immediately
+    const localFiltered = orders.filter(o => o.customer_name === custName || o.phone === custPhone);
+    setCustOrders(localFiltered);
+
+    if (!isOnline || !supabaseReady) return;
+    try {
+      let user = await getCurrentUser().catch(() => null);
+      if (!user) return; // no live session yet (background re-auth may still be running)
+      const { data, error } = await getCustomerOrders(user.id);
+      if (!error && data && data.length > 0) {
+        setCustOrders(data);
+        // Merge fresh statuses back into main orders list
+        setOrders(prev => {
+          const updated = prev.map(o => {
+            const fresh = data.find(d => d.id === o.id);
+            return fresh ? { ...o, status: fresh.status } : o;
+          });
+          storage.saveOrders(updated).catch(() => {});
+          return updated;
+        });
+        logger.info("Customer orders refreshed from Supabase", { count: data.length });
+      }
+    } catch (e) {
+      logger.warn("Could not refresh customer orders", { error: e.message });
+    }
+  };
+
+  // Refresh customer orders whenever my-orders screen is opened
+  useEffect(() => {
+    if (mode === "customer" && screen === "my-orders") {
+      refreshCustOrders();
+    }
+  }, [screen, mode]);
+
+  // Keep custOrders in sync with local orders array (fallback / offline)
+  useEffect(() => {
+    if (mode === "customer" && custName) {
+      setCustOrders(orders.filter(o => o.customer_name === custName || o.phone === custPhone));
+    }
+  }, [orders, custName]);
+
   const handleAutoLogin = async () => {
     try {
       // Hide admin button when leaving splash screen
@@ -718,7 +798,7 @@ export default function App() {
 
       const creds = await storage.getCustomerCredentials();
       if (creds && creds.email && creds.password) {
-        // Auto-login with saved creds
+        // Restore local profile immediately so the UI is instant
         const cust = await storage.getCustomer();
         if (cust) {
           setCustName(cust.name || "");
@@ -730,7 +810,34 @@ export default function App() {
           setCustLoggedIn(true);
           setMode("customer");
           setScreen("home");
-          logger.info("Auto-logged in from splash screen", { email: creds.email });
+          logger.info("Auto-logged in from local storage", { email: creds.email });
+
+          // Silently re-authenticate with Supabase in the background so
+          // the auth session is live (needed for order customer_id, profile sync, etc.)
+          if (isOnline && supabaseReady) {
+            loginCustomer(creds.email, creds.password)
+              .then(({ user, error }) => {
+                if (error) {
+                  logger.warn("Background Supabase re-auth failed — will retry on next manual login", { error });
+                } else {
+                  logger.info("Background Supabase session restored", { email: creds.email });
+                  // Refresh local profile cache from Supabase in case it changed in sol-pos
+                  if (user) {
+                    getCustomerProfile(user.id).then(({ data }) => {
+                      if (data) {
+                        storage.saveCustomer(data);
+                        setCustName(data.name || "");
+                        setCustPhone(data.phone || "");
+                        setCustAddress(data.address || "");
+                        setCustCity(data.city || "Sharon");
+                        setCustZip(data.zip || "02067");
+                      }
+                    });
+                  }
+                }
+              })
+              .catch(e => logger.warn("Background re-auth error", { error: e.message }));
+          }
           return;
         }
       }
@@ -892,8 +999,15 @@ export default function App() {
   }, [mode, screen, adminLoggedIn]);
 
   const totalItems = Object.values(items).reduce((s, v) => s + v, 0);
-  const availDates = getNextDays(10);
+  const availDates = getNextDays();
   const selectedDateInfo = availDates.find(d => d.date === pickupDate);
+
+  // RFC-4122 UUID v4 — works without any native module
+  const generateUUID = () =>
+    'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
 
   const updateItem = (key, delta) => {
     setItems(prev => {
@@ -950,10 +1064,14 @@ export default function App() {
       return;
     }
 
-    // Create new order
-    const nextOrderNumber = Math.max(...orders.map(o => o.order_number || 1000), 1000) + 1;
+    // Create new order — derive order_number from Supabase so it never
+    // collides with orders already in the DB (e.g. from sol-pos).
+    const localMax = Math.max(...orders.map(o => o.order_number || 1000), 1000);
+    const nextOrderNumber = (isOnline && supabaseReady)
+      ? await getNextOrderNumber(localMax)
+      : localMax + 1;
     const newOrder = {
-      id: `ord-${Date.now()}`, order_number: nextOrderNumber, customer_name: custName,
+      id: generateUUID(), order_number: nextOrderNumber, customer_name: custName,
       phone: custPhone, address: `${custAddress}, ${custCity}, MA ${custZip}`,
       lat: 42.12 + Math.random() * 0.02, lng: -71.17 - Math.random() * 0.02,
       num_items: totalItems, note: `${itemDesc}${note ? ` — ${note}` : ""}`, items: JSON.stringify(items),
@@ -971,7 +1089,14 @@ export default function App() {
     // Sync order to Supabase if online
     if (isOnline && supabaseReady) {
       try {
-        const { data, error } = await createOrder(newOrder);
+        // Get the authenticated user's ID — null is fine (guest/local-only session).
+        let customerId = null;
+        try { customerId = (await getCurrentUser())?.id ?? null; } catch (_) {}
+        const supabasePayload = {
+          ...newOrder,
+          customer_id: customerId,
+        };
+        const { data, error } = await createOrder(supabasePayload);
         if (error) {
           logger.warn("Failed to create order in Supabase, saved locally", { error });
         } else {
@@ -1106,7 +1231,16 @@ export default function App() {
       const found = ADMIN_ACCOUNTS.find(a => a.email.toLowerCase() === adminEmail.toLowerCase().trim() && a.password === adminPassword);
       if (found) { 
         setAdminLoggedIn(true); 
-        setAdminUser(found); 
+        setAdminUser(found);
+        
+        // Get last login from storage and display it
+        const storedLastLogin = await storage.getLastAdminLogin();
+        setLastAdminLogin(storedLastLogin);
+        
+        // Save current login time for next session
+        const now = new Date();
+        await storage.setLastAdminLogin(now);
+        
         setScreen("admin-orders");
         
         // Sync orders immediately after admin login
@@ -1137,7 +1271,7 @@ export default function App() {
   };
 
   const handleAdminLogout = () => {
-    setAdminLoggedIn(false); setAdminUser(null); setAdminEmail(""); setAdminPassword(""); setShowAdminButton(false); setAdminTapCount(0); setMode(null); setScreen("home");
+    setAdminLoggedIn(false); setAdminUser(null); setLastAdminLogin(null); setAdminEmail(""); setAdminPassword(""); setShowAdminButton(false); setAdminTapCount(0); setMode(null); setScreen("home");
   };
 
   const optimizeRoute = async () => {
@@ -1236,7 +1370,6 @@ export default function App() {
   // ═══════════════════════════════════════
   if (mode === "customer") {
     const t = useTranslation(language);
-    const custOrders = orders.filter(o => o.customer_name === custName || o.customer_name === "You");
     const custNav = [{ icon: "home", label: t("home"), scr: "home" }, { icon: "plus", label: t("newOrder"), scr: "new-order" }, { icon: "order", label: t("myOrders"), scr: "my-orders" }, { icon: "user", label: "Account", scr: "cust-profile" }];
 
     // ─── Customer Auth (Login / Register) ───
@@ -1529,7 +1662,12 @@ export default function App() {
           <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 160 }}>
             {/* Items */}
             <Card>
-              <Text style={{ fontSize: 15, fontWeight: "700", color: C.text, marginBottom: 4 }}>{t("selectItems")}</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                <Text style={{ fontSize: 15, fontWeight: "700", color: C.text }}>{t("selectItems")}</Text>
+                <View style={{ backgroundColor: totalItems > 0 ? C.primary : C.borderLight, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3 }}>
+                  <Text style={{ fontSize: 13, fontWeight: "700", color: totalItems > 0 ? "#fff" : C.textMuted }}>{totalItems} selected</Text>
+                </View>
+              </View>
               <Text style={{ fontSize: 12, color: C.textMuted, marginBottom: 16 }}>{t("tapToAdd")}</Text>
               {ITEM_TYPES.map(item => (
                 <View key={item.key} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.borderLight }}>
@@ -2014,13 +2152,30 @@ export default function App() {
 
     // ─── Admin Orders ───
     if (screen === "admin-orders") {
+      const formatTime = (date) => {
+        if (!date) return "Never";
+        const now = new Date();
+        const isToday = date.toDateString() === now.toDateString();
+        const isYesterday = new Date(date.getTime() + 86400000).toDateString() === now.toDateString();
+        
+        const timeStr = date.toLocaleString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+        const dateStr = date.toLocaleString("en-US", { month: "short", day: "numeric" });
+        
+        if (isToday) return `Today at ${timeStr}`;
+        if (isYesterday) return `Yesterday at ${timeStr}`;
+        return `${dateStr} at ${timeStr}`;
+      };
+      
       return (
         <Screen>
           <Header>
-            <View style={{ flex: 1 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <View style={{ flex: 1, alignItems: "center" }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, width: "100%" }}>
                 <SolLogo size={14} dark />
-                <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, marginLeft: "auto" }}>{adminUser?.name} ({adminUser?.role})</Text>
+                <View style={{ marginLeft: "auto", alignItems: "flex-end" }}>
+                  <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 11 }}>{adminUser?.name} ({adminUser?.role})</Text>
+                  <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 9, marginTop: 2 }}>Last login: {formatTime(lastAdminLogin)}</Text>
+                </View>
               </View>
               <Text style={{ color: "#fff", fontSize: 18, fontWeight: "700", marginTop: 4 }}>Orders</Text>
             </View>
@@ -2062,9 +2217,23 @@ export default function App() {
 
     // ─── Routes ───
     if (screen === "admin-routes") {
+      const formatTime = (date) => {
+        if (!date) return "Never";
+        const now = new Date();
+        const isToday = date.toDateString() === now.toDateString();
+        const isYesterday = new Date(date.getTime() + 86400000).toDateString() === now.toDateString();
+        
+        const timeStr = date.toLocaleString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+        const dateStr = date.toLocaleString("en-US", { month: "short", day: "numeric" });
+        
+        if (isToday) return `Today at ${timeStr}`;
+        if (isYesterday) return `Yesterday at ${timeStr}`;
+        return `${dateStr} at ${timeStr}`;
+      };
+      
       return (
         <Screen>
-          <Header><View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700" }}>Routes</Text><Text style={{ color: "rgba(255,255,255,0.8)", fontSize: 11, marginTop: 2 }}>Optimize pickup routes by date</Text></View></Header>
+          <Header><View style={{ flex: 1, alignItems: "center" }}><View style={{ flexDirection: "row", alignItems: "center", gap: 8, width: "100%" }}><SolLogo size={14} dark /><View style={{ marginLeft: "auto", alignItems: "flex-end" }}><Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 11 }}>{adminUser?.name} ({adminUser?.role})</Text><Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 9, marginTop: 2 }}>Last login: {formatTime(lastAdminLogin)}</Text></View></View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700", marginTop: 4 }}>Routes</Text><Text style={{ color: "rgba(255,255,255,0.8)", fontSize: 11, marginTop: 2 }}>Optimize pickup routes by date</Text></View></Header>
           <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 160 }}>
             {/* Date selector */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
@@ -2150,10 +2319,24 @@ export default function App() {
     if (screen === "admin-reports") {
       const reportData = getReportData(orders, reportTimeframe);
       const timeframeOptions = ["weekly", "monthly", "yearly"];
+      
+      const formatTime = (date) => {
+        if (!date) return "Never";
+        const now = new Date();
+        const isToday = date.toDateString() === now.toDateString();
+        const isYesterday = new Date(date.getTime() + 86400000).toDateString() === now.toDateString();
+        
+        const timeStr = date.toLocaleString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+        const dateStr = date.toLocaleString("en-US", { month: "short", day: "numeric" });
+        
+        if (isToday) return `Today at ${timeStr}`;
+        if (isYesterday) return `Yesterday at ${timeStr}`;
+        return `${dateStr} at ${timeStr}`;
+      };
 
       return (
         <Screen>
-          <Header><View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700" }}>Reports</Text></View></Header>
+          <Header><View style={{ flex: 1, alignItems: "center" }}><View style={{ flexDirection: "row", alignItems: "center", gap: 8, width: "100%" }}><SolLogo size={14} dark /><View style={{ marginLeft: "auto", alignItems: "flex-end" }}><Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 11 }}>{adminUser?.name} ({adminUser?.role})</Text><Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 9, marginTop: 2 }}>Last login: {formatTime(lastAdminLogin)}</Text></View></View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700", marginTop: 4 }}>Reports</Text></View></Header>
           <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 160 }}>
             {/* Timeframe Selector */}
             <Card style={{ backgroundColor: C.accentLight, borderColor: C.accent + "30" }}>
@@ -2239,9 +2422,23 @@ export default function App() {
 
     // ─── Settings ───
     if (screen === "admin-settings") {
+      const formatTime = (date) => {
+        if (!date) return "Never";
+        const now = new Date();
+        const isToday = date.toDateString() === now.toDateString();
+        const isYesterday = new Date(date.getTime() + 86400000).toDateString() === now.toDateString();
+        
+        const timeStr = date.toLocaleString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+        const dateStr = date.toLocaleString("en-US", { month: "short", day: "numeric" });
+        
+        if (isToday) return `Today at ${timeStr}`;
+        if (isYesterday) return `Yesterday at ${timeStr}`;
+        return `${dateStr} at ${timeStr}`;
+      };
+      
       return (
         <Screen>
-          <Header><View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700" }}>Settings</Text></View></Header>
+          <Header><View style={{ flex: 1, alignItems: "center" }}><View style={{ flexDirection: "row", alignItems: "center", gap: 8, width: "100%" }}><SolLogo size={14} dark /><View style={{ marginLeft: "auto", alignItems: "flex-end" }}><Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 11 }}>{adminUser?.name} ({adminUser?.role})</Text><Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 9, marginTop: 2 }}>Last login: {formatTime(lastAdminLogin)}</Text></View></View><Text style={{ color: "#fff", fontSize: 18, fontWeight: "700", marginTop: 4 }}>Settings</Text></View></Header>
           <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 160 }}>
             <Card>
               <Text style={{ fontSize: 15, fontWeight: "700", color: C.text, marginBottom: 12 }}>Account</Text>
