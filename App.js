@@ -25,6 +25,7 @@ import {
   testSupabaseConnection,
   logSMS,
   cancelOrder,
+  restoreSession,
 } from "./supabaseClient"; // Supabase for cloud storage
 import { subscribeToNetworkChanges, isAppOnline, checkNetworkStatus } from "./networkStatus"; // Network monitoring
 import * as LocalAuthentication from "expo-local-authentication";
@@ -844,31 +845,44 @@ export default function App() {
           setScreen("home");
           logger.info("Auto-logged in from local storage", { email: creds.email });
 
-          // Silently re-authenticate with Supabase in the background so
-          // the auth session is live (needed for order customer_id, profile sync, etc.)
+          // Silently restore the Supabase session in the background.
+          // Try persisted session first (no password needed), then fall back to
+          // password re-auth in case the session has expired after >60 days.
           if (isOnline && supabaseReady) {
-            loginCustomer(creds.email, creds.password)
+            const applyProfile = (userId) => {
+              getCustomerProfile(userId).then(({ data }) => {
+                if (data) {
+                  storage.saveCustomer(data);
+                  setCustName(data.name || "");
+                  setCustPhone(data.phone || "");
+                  setCustAddress(data.address || "");
+                  setCustCity(data.city || "Sharon");
+                  setCustZip(data.zip || "02067");
+                }
+              });
+            };
+
+            restoreSession()
               .then(({ user, error }) => {
-                if (error) {
-                  logger.warn("Background Supabase re-auth failed — will retry on next manual login", { error });
+                if (!error && user) {
+                  // Session was alive in AsyncStorage — no password needed
+                  logger.info("Background Supabase session restored (cached)", { email: creds.email });
+                  applyProfile(user.id);
                 } else {
-                  logger.info("Background Supabase session restored", { email: creds.email });
-                  // Refresh local profile cache from Supabase in case it changed in sol-pos
-                  if (user) {
-                    getCustomerProfile(user.id).then(({ data }) => {
-                      if (data) {
-                        storage.saveCustomer(data);
-                        setCustName(data.name || "");
-                        setCustPhone(data.phone || "");
-                        setCustAddress(data.address || "");
-                        setCustCity(data.city || "Sharon");
-                        setCustZip(data.zip || "02067");
+                  // Cached session missing or expired — fall back to password re-auth
+                  loginCustomer(creds.email, creds.password)
+                    .then(({ user: pwUser, error: pwError }) => {
+                      if (pwError) {
+                        logger.warn("Background Supabase re-auth failed — customer will need to log in again", { error: pwError });
+                      } else {
+                        logger.info("Background Supabase session restored via password", { email: creds.email });
+                        if (pwUser) applyProfile(pwUser.id);
                       }
-                    });
-                  }
+                    })
+                    .catch(e => logger.warn("Background re-auth error", { error: e.message }));
                 }
               })
-              .catch(e => logger.warn("Background re-auth error", { error: e.message }));
+              .catch(e => logger.warn("Session restore error", { error: e.message }));
           }
           return;
         }

@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import logger from './logger';
 
 // ─── Supabase Configuration ───
@@ -16,6 +17,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
+    storage: AsyncStorage,
   },
 });
 
@@ -93,7 +95,33 @@ export const loginCustomer = async (email, password) => {
     logger.info('Customer login successful', { email });
     return { user: data.user, session: data.session, error: null };
   } catch (e) {
-    logger.error('Customer login failed', { error: e.message });
+    logger.warn('Customer login failed', { error: e.message });
+    return { user: null, session: null, error: e.message };
+  }
+};
+
+/**
+ * Restore a persisted Supabase session (no password needed).
+ * Uses the refresh token stored in AsyncStorage by the Supabase client.
+ */
+export const restoreSession = async () => {
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    if (data.session && data.session.user) {
+      logger.info('Supabase session restored from storage', { email: data.session.user.email });
+      return { user: data.session.user, session: data.session, error: null };
+    }
+    // Session expired — attempt a silent refresh
+    const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+    if (refreshError) throw refreshError;
+    if (refreshData.session && refreshData.user) {
+      logger.info('Supabase session refreshed', { email: refreshData.user.email });
+      return { user: refreshData.user, session: refreshData.session, error: null };
+    }
+    return { user: null, session: null, error: 'No active session' };
+  } catch (e) {
+    logger.warn('Session restore failed', { error: e.message });
     return { user: null, session: null, error: e.message };
   }
 };
