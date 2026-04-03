@@ -453,6 +453,21 @@ export const updateOrderStatus = async (orderId, newStatus) => {
  * @param {string} orderId
  * @param {string} reason - customer-provided cancellation reason
  */
+export const appendOrderNote = async (orderId, note) => {
+  try {
+    const { error } = await supabase
+      .from('orders')
+      .update({ note, updated_at: new Date().toISOString() })
+      .eq('id', orderId);
+    if (error) throw error;
+    logger.info('Order note updated', { orderId });
+    return { error: null };
+  } catch (e) {
+    logger.warn('Failed to update order note', { error: e.message });
+    return { error: e.message };
+  }
+};
+
 export const cancelOrder = async (orderId, reason) => {
   try {
     const now = new Date().toISOString();

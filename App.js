@@ -25,6 +25,7 @@ import {
   testSupabaseConnection,
   logSMS,
   cancelOrder,
+  appendOrderNote,
   restoreSession,
 } from "./supabaseClient"; // Supabase for cloud storage
 import { subscribeToNetworkChanges, isAppOnline, checkNetworkStatus } from "./networkStatus"; // Network monitoring
@@ -312,6 +313,9 @@ export default function App() {
   const [orders, setOrders] = useState(mockOrders);
   const [custOrders, setCustOrders] = useState([]);
   const [cancelModal, setCancelModal] = useState(null); // { orderId, orderNumber } | null
+  const [noteModal, setNoteModal] = useState(null); // { orderId, orderNumber, notePrefix } | null
+  const [noteText, setNoteText] = useState("");
+  const [noteLoading, setNoteLoading] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelLoading, setCancelLoading] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(null);
@@ -1949,6 +1953,17 @@ export default function App() {
                     <Icon name="edit" size={16} color="#fff" /><BtnText>Edit Order</BtnText>
                   </Btn>
                 )}
+                {o.status !== 'cancelled' && (
+                  <Btn onPress={() => {
+                    const parts = (o.note || "").split(" — ");
+                    const prefix = parts[0] || "";
+                    const existing = parts.slice(1).join(" — ");
+                    setNoteModal({ orderId: o.id, orderNumber: o.order_number, notePrefix: prefix });
+                    setNoteText(existing);
+                  }} style={{ marginTop: 8, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, alignItems: "center", justifyContent: "center" }}>
+                    <Icon name="edit" size={14} color={C.primary} /><BtnText style={{ color: C.primary }}>Add / Edit Note</BtnText>
+                  </Btn>
+                )}
                 {!['picked_up', 'processing', 'delivered', 'cancelled'].includes(o.status) && (
                   <Btn onPress={() => { setCancelModal({ orderId: o.id, orderNumber: o.order_number }); setCancelReason(""); }}
                     style={{ marginTop: 8, backgroundColor: C.danger, alignItems: "center", justifyContent: "center" }}>
@@ -2013,6 +2028,59 @@ export default function App() {
                     disabled={cancelLoading}
                   >
                     <BtnText>{cancelLoading ? "Cancelling..." : "Yes, Cancel"}</BtnText>
+                  </Btn>
+                </View>
+              </View>
+            </View>
+          )}
+          {/* ── Add / Edit Note Modal ── */}
+          {noteModal && (
+            <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", alignItems: "center", padding: 24 }}>
+              <View style={{ backgroundColor: "#fff", borderRadius: 16, padding: 24, width: "100%", shadowColor: "#000", shadowOpacity: 0.2, shadowRadius: 12, elevation: 8 }}>
+                <Text style={{ fontSize: 17, fontWeight: "700", color: C.text, marginBottom: 6 }}>Note for Order #{noteModal.orderNumber}</Text>
+                <Text style={{ fontSize: 13, color: C.textSecondary, marginBottom: 16 }}>Add special instructions for the cleaner (stains, fabric care, etc.)</Text>
+                <TextInput
+                  value={noteText}
+                  onChangeText={setNoteText}
+                  placeholder="E.g., Stain on collar, delicate fabric, no starch..."
+                  placeholderTextColor={C.textMuted}
+                  multiline
+                  numberOfLines={4}
+                  style={{ borderWidth: 1, borderColor: C.border, borderRadius: 10, padding: 12, fontSize: 14, color: C.text, minHeight: 100, textAlignVertical: "top", marginBottom: 20 }}
+                />
+                <View style={{ flexDirection: "row", gap: 12 }}>
+                  <Btn onPress={() => setNoteModal(null)} style={{ flex: 1, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border }}>
+                    <BtnText style={{ color: C.text }}>Cancel</BtnText>
+                  </Btn>
+                  <Btn
+                    onPress={async () => {
+                      setNoteLoading(true);
+                      try {
+                        const newNote = noteModal.notePrefix + (noteText.trim() ? ` — ${noteText.trim()}` : "");
+                        const updatedOrders = orders.map(o =>
+                          o.id === noteModal.orderId ? { ...o, note: newNote } : o
+                        );
+                        setOrders(updatedOrders);
+                        setCustOrders(updatedOrders.filter(o => o.customer_name === custName || o.phone === custPhone));
+                        await storage.saveOrders(updatedOrders);
+                        if (isOnline && supabaseReady) {
+                          const { error } = await appendOrderNote(noteModal.orderId, newNote);
+                          if (error) logger.warn("Note saved locally but Supabase update failed", { error });
+                          else logger.info("Order note updated in Supabase", { orderId: noteModal.orderId });
+                        }
+                        setNoteModal(null);
+                        Alert.alert("Note Saved", "Your note has been added to the order.");
+                      } catch (e) {
+                        logger.error("Save note error", { error: e.message });
+                        Alert.alert("Error", "Could not save note. Please try again.");
+                      } finally {
+                        setNoteLoading(false);
+                      }
+                    }}
+                    style={{ flex: 2, backgroundColor: C.primary }}
+                    disabled={noteLoading}
+                  >
+                    <BtnText>{noteLoading ? "Saving..." : "Save Note"}</BtnText>
                   </Btn>
                 </View>
               </View>
