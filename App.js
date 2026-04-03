@@ -162,27 +162,55 @@ const ITEM_TYPES = [
 ];
 const WEEKDAY_TIME_SLOTS = ["6:00 PM - 7:00 PM", "7:00 PM - 8:00 PM"];
 const WEEKEND_TIME_SLOTS = ["4:00 PM - 5:00 PM", "5:00 PM - 6:00 PM", "6:00 PM - 7:00 PM"];
+const SUNDAY_TIME_SLOTS  = ["10:00 AM - 11:00 AM", "11:00 AM - 12:00 PM", "12:00 PM - 1:00 PM"];
 
 function getNextDays() {
   const days = [];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  // Find Monday of current week
-  const dow = today.getDay();
-  const mondayOffset = dow === 0 ? -6 : 1 - dow;
-  const monday = new Date(today);
-  monday.setDate(today.getDate() + mondayOffset);
-  // Show current week (Mon-Sat) + next week (Mon-Sat), skipping past dates
+  const now   = new Date();
+  const hour  = now.getHours(); // 0-23 in device local time
+
+  // Cut-off rules:
+  //   before 10 AM  → today is eligible (same-day evening windows)
+  //   10 AM–12 PM   → today is NOT eligible (too close for morning, nothing evening yet)
+  //   after 12 PM   → today is NOT eligible; start from tomorrow
+  const todayStr = now.toISOString().split("T")[0];
+  const includeToday = hour < 10; // only show today if before 10 AM
+
+  // Earliest eligible date string
+  const earliest = new Date(now);
+  if (!includeToday) earliest.setDate(earliest.getDate() + 1);
+  earliest.setHours(0, 0, 0, 0);
+
+  // Find Monday of the week containing `earliest`
+  const dow = earliest.getDay(); // 0=Sun,1=Mon…
+  const mondayOffset = dow === 0 ? 1 : (1 - dow); // skip to next Mon if earliest is Sun
+  const monday = new Date(earliest);
+  monday.setDate(earliest.getDate() + mondayOffset);
+
+  // If earliest itself is a Sunday, add it first before the Mon-Sun window
+  if (dow === 0) {
+    days.push({
+      date: earliest.toISOString().split("T")[0],
+      label: earliest.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }),
+      isWeekend: false,
+      isSunday: true,
+    });
+  }
+
+  // Show 2 weeks of Mon–Sun, skipping dates before `earliest`
   for (let week = 0; week < 2; week++) {
-    for (let d = 0; d < 6; d++) {
+    for (let d = 0; d < 7; d++) {
       const c = new Date(monday);
       c.setDate(monday.getDate() + week * 7 + d);
-      if (c < today) continue;
-      const isWeekend = c.getDay() === 6;
+      if (c < earliest) continue;
+      const dayOfWeek = c.getDay();
+      const isSunday  = dayOfWeek === 0;
+      const isSaturday = dayOfWeek === 6;
       days.push({
         date: c.toISOString().split("T")[0],
         label: c.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }),
-        isWeekend,
+        isWeekend: isSaturday,
+        isSunday,
       });
     }
   }
@@ -1660,6 +1688,13 @@ export default function App() {
                 <Text style={{ fontSize: 11, color: C.textSecondary }}>5 Post Office Sq #10, Sharon, MA</Text>
                 <Text style={{ fontSize: 11, color: C.textSecondary }}>(781) 784-3937</Text>
               </View>
+              <TouchableOpacity
+                onPress={() => Linking.openURL("tel:7817843937")}
+                style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: C.primary, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 }}
+              >
+                <Icon name="phone" size={16} color="#fff" />
+                <Text style={{ color: "#fff", fontSize: 13, fontWeight: "700" }}>Call Us</Text>
+              </TouchableOpacity>
             </View>
           </View>
           
@@ -1711,12 +1746,12 @@ export default function App() {
                     <Label>{t("selectTimeSlot")}</Label>
                     <View style={{ backgroundColor: selectedDateInfo?.isWeekend ? C.accentLight : C.primaryLight, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2 }}>
                       <Text style={{ fontSize: 10, fontWeight: "700", color: selectedDateInfo?.isWeekend ? C.accent : C.primary }}>
-                        {selectedDateInfo?.isWeekend ? "SATURDAY" : "WEEKDAY"}
+                        {selectedDateInfo?.isSunday ? "SUNDAY" : selectedDateInfo?.isWeekend ? "SATURDAY" : "WEEKDAY"}
                       </Text>
                     </View>
                   </View>
                   <View style={{ gap: 8 }}>
-                    {(selectedDateInfo?.isWeekend ? WEEKEND_TIME_SLOTS : WEEKDAY_TIME_SLOTS).map(timeSlot => (
+                    {(selectedDateInfo?.isSunday ? SUNDAY_TIME_SLOTS : selectedDateInfo?.isWeekend ? WEEKEND_TIME_SLOTS : WEEKDAY_TIME_SLOTS).map(timeSlot => (
                       <TouchableOpacity key={timeSlot} onPress={() => setPickupTime(timeSlot)}
                         style={{ padding: 12, borderRadius: 10, backgroundColor: pickupTime === timeSlot ? C.primary : C.bg, borderWidth: 1.5, borderColor: pickupTime === timeSlot ? C.primary : C.border }}>
                         <Text style={{ fontSize: 13, fontWeight: "600", color: pickupTime === timeSlot ? "#fff" : C.text, textAlign: "center" }}>{timeSlot}</Text>
