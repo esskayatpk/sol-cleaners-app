@@ -1,203 +1,169 @@
 # Sol Cleaners Logger Documentation
 
 ## Overview
-The Sol Cleaners app includes a comprehensive logging system that automatically captures all errors, warnings, info messages, and debug logs with timestamps. Logs are persisted to AsyncStorage and can be exported for debugging.
+The Sol Cleaners app uses a file-based logging system that writes structured JSON entries to daily log files on the device. Logs persist across app restarts, survive 30 days, and are capped at 50 MB total to protect storage.
+
+## Storage
+
+| Property | Value |
+|----------|-------|
+| Location | `FileSystem.documentDirectory + sol_logs/` |
+| File naming | `sol_YYYY-MM-DD.log` (one per calendar day) |
+| Format | One JSON object per line (newline-delimited JSON) |
+| Retention | 30 days; files older than 30 days deleted on startup |
+| Size cap | 50 MB total; oldest files removed first when exceeded |
+| Fallback | AsyncStorage key `sol_log_fallback` if device FS unavailable |
 
 ## Features
-- ✅ Automatic timestamp on every log entry
+- ✅ Daily log files written to device storage (`expo-file-system`)
+- ✅ Automatic 30-day retention cleanup on every app start
+- ✅ 50 MB total size cap; oldest files evicted when exceeded
+- ✅ In-memory ring buffer (latest 1000 entries) for fast `getLogs()`
+- ✅ Serialised writes — no race conditions between concurrent log calls
+- ✅ AsyncStorage fallback if file system is unavailable
 - ✅ Multiple log levels: DEBUG, INFO, WARN, ERROR
-- ✅ Persists logs to AsyncStorage (one log file per calendar day)
-- ✅ Automatic console logging with proper formatting
-- ✅ Maximum 1000 logs stored in memory (auto-cleanup)
-- ✅ Export logs to text file with timestamped filename
-- ✅ Clear logs when needed
+- ✅ DEBUG goes to memory/file only — no console noise
+
+## Log Entry Structure
+```json
+{
+  "timestamp": "2026-04-03T12:52:49.973Z",
+  "level": "WARN",
+  "message": "Background Supabase re-auth failed",
+  "data": { "error": "Invalid login credentials" }
+}
+```
 
 ## Usage
 
-### Import the Logger
+### Import
 ```javascript
 import logger from "./logger";
 ```
 
 ### Log Levels
 
-#### ERROR - Critical issues
 ```javascript
-logger.error("Order submission failed", { orderId: "ord-123", reason: "Network error" });
-// Output: [ERROR] 2026-03-02T14:35:22.123Z: Order submission failed - {"orderId":"ord-123",...}
-```
-
-#### WARN - Warnings that should be noted
-```javascript
-logger.warn("Order cancelled by user", { orderId: "ord-456" });
-// Output: [WARN] 2026-03-02T14:35:25.456Z: Order cancelled by user - {"orderId":"ord-456"}
-```
-
-#### INFO - General information
-```javascript
+logger.debug("Processing item selection", { itemCount: 5 });  // memory/file only
 logger.info("Customer logged in", { email: "john@example.com" });
-// Output: [INFO] 2026-03-02T14:35:30.789Z: Customer logged in - {"email":"john@example.com"}
+logger.warn("Supabase re-auth failed, will retry", { error: "..." });
+logger.error("Order submission failed", { orderId: "ord-123" });
 ```
 
-#### DEBUG - Debugging details
+### Initialize (called automatically in App.js)
 ```javascript
-logger.debug("Processing item selection", { itemCount: 5 });
-// Output: [DEBUG] 2026-03-02T14:35:35.012Z: Processing item selection - {"itemCount":5}
-```
-
-### Initialize Logger
-The logger is automatically initialized when the app starts. It loads any existing logs from AsyncStorage for the current day.
-
-```javascript
-// Called automatically in App.js:
 await logger.initialize();
-logger.info("App started");
 ```
+On init the logger:
+1. Creates `sol_logs/` directory if missing
+2. Loads today's file into the in-memory buffer
+3. Runs cleanup (delete old / oversized files)
 
 ### Access Logs
 
-#### Get logs as array
 ```javascript
+// Array of latest 1000 log entries
 const logs = logger.getLogs();
-console.log("Total logs:", logs.length);
+
+// Human-readable multi-line string of in-memory logs
+const text = logger.getLogsAsString();
+
+// Absolute path to today's log file (pass to expo-sharing, etc.)
+const todayPath = logger.getTodayLogPath();
+
+// All retained log paths, newest first
+const allPaths = await logger.getAllLogPaths();
 ```
 
-#### Get logs as formatted string
-```javascript
-const logsText = logger.getLogsAsString();
-console.log(logsText);
-```
-
-#### Export logs to file
+### Export Today's Log
 ```javascript
 const result = await logger.exportLogs();
-// Creates file: sol_logs_2026-03-02T14-35-42-123Z.txt
 if (result.success) {
-  console.log("Exported to:", result.filename);
-} else {
-  console.log("Export failed:", result.error);
+  console.log("File:", result.path);   // absolute path
+  console.log("Content:", result.content);
 }
 ```
 
-#### Clear all logs
+### Clear All Logs
 ```javascript
-await logger.clearLogs();
+await logger.clearLogs(); // deletes all .log files + clears memory buffer
 ```
 
-## Log Storage
+## Viewing Logs
 
-### Location
-- **AsyncStorage Key**: `sol_logs_YYYY-MM-DD` (one per calendar day)
-- **Format**: JSON array of log entries
-- **Max Size**: 1000 logs per session
-
-### Log Entry Structure
-```javascript
-{
-  timestamp: "2026-03-02T14:35:22.123Z",
-  level: "ERROR",
-  message: "Order submission failed",
-  data: { orderId: "ord-123", error: "Network timeout" }
-}
+### During Development (Expo terminal)
+All `INFO` / `WARN` / `ERROR` entries are printed to the Expo dev-server console with the format:
 ```
+[WARN] 2026-04-03T12:52:49.973Z: Background Supabase re-auth failed { error: "Invalid login credentials" }
+```
+
+### On Device (after go-live)
+1. Call `logger.getTodayLogPath()` to get the file path
+2. Pass to `expo-sharing` to share/email the file:
+```javascript
+import * as Sharing from "expo-sharing";
+await Sharing.shareAsync(logger.getTodayLogPath());
+```
+3. Open in any text editor — one JSON object per line
+
+### Programmatic Filtering
+```javascript
+const errors = logger.getLogs().filter(l => l.level === "ERROR");
+const recent = logger.getLogs().filter(l => new Date(l.timestamp) > new Date(Date.now() - 3600_000));
+```
+
+## Retention & Cleanup
+
+Cleanup runs automatically every time `logger.initialize()` is called (i.e. every app start):
+
+1. **Age**: Any file with `sol_YYYY-MM-DD.log` name where the date is > 30 days ago is deleted.
+2. **Size**: After age-based deletion, if total remaining size > 50 MB, the oldest files are deleted one by one until total is ≤ 50 MB.
+
+No manual intervention required.
 
 ## Common Use Cases
 
-### 1. Track Customer Actions
+### Track Auth Events
 ```javascript
-logger.info("Customer created order", { 
-  customerId: custName, 
-  itemCount: totalItems, 
-  pickupDate: pickupDate 
-});
+logger.info("Auto-login: Supabase session restored", { email });
+logger.warn("Background re-auth failed — customer still logged in locally", { error });
 ```
 
-### 2. Debug Payment Issues
+### Track Order Lifecycle
 ```javascript
-try {
-  processPayment(paymentData);
-  logger.info("Payment successful", { amount: paymentData.amount });
-} catch (e) {
-  logger.error("Payment failed", { 
-    error: e.message, 
-    paymentMethod: paymentData.method 
-  });
-}
+logger.info("Order created", { orderId, orderNumber, items: totalItems });
+logger.info("Order note updated", { orderId });
+logger.info("Order cancelled", { orderId, reason });
 ```
 
-### 3. Monitor Admin Actions
+### Track Sync Status
 ```javascript
-logger.info("Admin updated order status", { 
-  orderId: order.id, 
-  oldStatus: order.status, 
-  newStatus: newStatus,
-  admin: adminUser.name 
-});
-```
-
-### 4. Track Authentication
-```javascript
-logger.info("User login", { email: email, mode: "customer/admin" });
-logger.info("User logout", { email: email });
-```
-
-## Viewing Logs in Development
-
-### Console Output
-All logs are also printed to the console with level-based formatting:
-- ERROR → console.error()
-- WARN → console.warn()
-- INFO → console.log()
-- DEBUG → console.debug()
-
-### Expo DevTools
-1. Open Expo DevTools in VS Code
-2. Check the console for real-time log output
-3. Look for `[ERROR]`, `[WARN]`, `[INFO]`, `[DEBUG]` prefixes
-
-### Export for Analysis
-```javascript
-// In a debug screen or admin panel:
-const exported = await logger.exportLogs();
-// Download the exported file to analyze offline
+logger.info("Orders synced to Supabase", { count: updatedOrders.length });
+logger.warn("Sync failed, retrying on next connection", { error });
 ```
 
 ## Best Practices
 
 ✅ **DO:**
-- Log important user actions (login, orders, payments)
-- Include relevant data with errors (IDs, user info, amounts)
-- Use appropriate log levels (don't use ERROR for warnings)
-- Log at critical decision points
+- Log important customer actions (login, orders, cancellations, notes)
+- Include relevant IDs and context with every entry
+- Use `warn` for recoverable failures, `error` only for unhandled exceptions
+- Log at entry/exit of critical async flows
 
 ❌ **DON'T:**
-- Log sensitive data (passwords, credit cards, PINs)
-- Log on every render (will spam the logger)
-- Use ERROR for non-critical issues
-- Log large objects repeatedly
+- Log passwords, full auth tokens, or payment card data
+- Log on every render or in tight loops
+- Use `error` for expected failure paths (wrong password, offline state)
 
 ## Troubleshooting
 
-### Logs not persisting
-- Check AsyncStorage permissions
-- Verify `logger.initialize()` is called on app startup
-- Check available storage on device
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| No log files on device | `expo-file-system` not installed | `npx expo install expo-file-system` |
+| Logs missing after restart | Old AsyncStorage-only build | Upgrade to current `logger.js` |
+| `initialize()` hangs | Slow FS on first run | Already handled — 5s timeout then continues |
+| File not found in sharing | Path changed | Use `logger.getTodayLogPath()` — never hardcode |
 
-### Log file too large
-- Logs are automatically limited to 1000 entries
-- Old logs can be exported then cleared with `logger.clearLogs()`
-- Logs reset daily (separate file per calendar day)
-
-### Export not working
-- Ensure the device supports file export (works on web/Expo)
-- Check browser file download settings
-- Verify sufficient storage space
-
-## Future Enhancements
-
-Potential improvements:
-- Cloud backup of logs
-- Remote log aggregation
 - Compression of exported logs
 - Log rotation/archival
 - Filtered log export (by level, date range, etc.)

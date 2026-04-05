@@ -6,19 +6,24 @@ Works on **iPhone**, **Android**, and **Web** from the same codebase.
 
 **Hybrid Architecture**: Local SQLite storage + Supabase cloud database for seamless offline-first experience with cloud backup, automatic sync, and real-time admin reporting.
 
-## Latest Features (March 2026)
+## Latest Features (April 2026)
 
 ✅ **Biometric Authentication** — Face ID (iOS) & Fingerprint (Android) for secure, fast login  
 ✅ **Hidden Admin Access** — 5-tap gesture on splash screen logo reveals admin portal  
 ✅ **Password Reset** — Email-based password recovery with email verification  
-✅ **Auto-Login** — Stays logged in even after app restart (with manual logout option)  
+✅ **Auto-Login** — Supabase session persisted via AsyncStorage; survives restarts without re-entering password  
 ✅ **Customer Identity** — Logged-in customer name displayed on all screens  
 ✅ **Unique Order Numbers** — No duplicate order constraint violations  
 ✅ **Admin Order Sync** — Automatic sync of pending orders when admin logs in  
 ✅ **Weekly/Monthly/Yearly Reports** — Admin & Manager roles get detailed analytics  
 ✅ **Role-Based Access** — Admin, Manager (reports access), Driver (dashboard only)  
 ✅ **Remote Testing** — Expo Tunnel for sharing app via URL with remote testers  
-✅ **Splash Screen Polish** — Improved address display, logo clarity fix  
+✅ **Sol-POS Customer Deduplication** — Existing POS customers linked via `auth_user_id`; no FK-breaking row changes  
+✅ **Order Cancellation** — Customer can cancel pending orders with required reason; soft-deleted in POS  
+✅ **Sunday Pickup Slots** — 10 AM–1 PM Sunday slots; same-day eligible before 10 AM  
+✅ **One-Click Store Call** — "Call Us" button on new-order screen dials `(781) 784-3937` instantly  
+✅ **Add/Edit Note on Existing Orders** — Customer can append special instructions to any non-cancelled order  
+✅ **Persistent File Logging** — Daily `.log` files written to device storage; 30-day retention; 50 MB cap  
 
 ## Setup (5 minutes)
 
@@ -71,7 +76,8 @@ Opens at http://localhost:8081
 - **Register**: Create account with name, phone, email, address, password
 - **Login**: Sign in with email/password (cloud or local fallback)
 - **Password Reset**: "Forgot password?" link → email verification → auto-redirect to sign in
-- **Auto-Login**: Credentials persisted securely; auto-restores on app restart
+- **Session Persistence**: Supabase refresh token stored in AsyncStorage; auto-restores session on every restart — no password re-entry needed unless inactive for >60 days
+- **Session Restore Order**: `restoreSession()` (token) → `loginCustomer()` (password fallback) → local storage (offline fallback)
 - **Manual Logout**: Available on customer profile screen; clears saved credentials
 
 ### Admin Access (Hidden)
@@ -185,6 +191,11 @@ Reports update in real-time and are stored in Supabase.
 - **Status Updates**: Status changes replicate to cloud with SMS notifications
 - **Route Optimization**: Admin can optimize pickup routes; saved to cloud
 - **Pickup Scheduling**: Schedule future pickups; date range aligns across customer/admin
+- **Sunday Slots**: 10 AM–1 PM Sunday pickup slots; same-day slots shown if before 10 AM
+- **Special Instructions**: Customer enters notes during order creation (appended to item description)
+- **Add/Edit Note After**: Customer can update special instructions on any non-cancelled order from My Orders
+- **Order Cancellation**: Customer can cancel pending/confirmed orders with a required reason; soft-deleted (`deleted_at`) so POS can surface reason
+- **One-Click Store Call**: "Call Us" button on new-order screen dials `(781) 784-3937` directly
 
 ### 📊 Business Analytics
 - **Weekly Reports**: Orders, completions, items, status breakdown
@@ -215,17 +226,21 @@ Reports update in real-time and are stored in Supabase.
 Your app is configured with Supabase project: `hngxowkjanqz`
 
 **Database Tables:**
-- `customers` - Customer profiles (id, email, name, phone, address, city, zip)
-- `orders` - Order details (id, order_number UNIQUE, customer_id, status, pickup_date, pickup_time, num_items, route_order, lat, lng, created_at)
-- `sms_log` - SMS delivery tracking (id, order_id, to_phone, text, status, created_at)
+- `customers` — Customer profiles (`id`, `email`, `name`, `phone`, `address`, `city`, `zip`, `auth_user_id UUID UNIQUE`)
+- `orders` — Order details (`id`, `order_number UNIQUE`, `customer_id`, `status`, `pickup_date`, `pickup_time`, `num_items`, `note`, `payment_method`, `route_order`, `lat`, `lng`, `cancellation_reason`, `cancelled_at`, `deleted_at`, `created_at`, `updated_at`)
+- `sms_log` — SMS delivery tracking (`id`, `order_id`, `to_phone`, `text`, `status`, `created_at`)
+
+**`auth_user_id` column** — bridges sol-pos existing customers with app auth users without changing `customers.id` (preserves all FK references to orders).
+
+**Cancellation soft-delete** — cancelled orders set `deleted_at` so POS can filter on `deleted_at IS NOT NULL` to surface cancellations with reason.
 
 **Key Files:**
-- `supabaseClient.js` - Supabase integration layer (29 functions for all operations)
-- `networkStatus.js` - Network monitoring with offline detection
-- `App.js` - Main app with Supabase auth, order integration, reporting, role-based access
-- `sqliteStorage.js` - Local SQLite storage for offline cache
-- `i18n.js` - Multi-language support (EN/ES)
-- `logger.js` - Comprehensive logging system
+- `supabaseClient.js` — Supabase integration layer (functions for all operations incl. `restoreSession`, `appendOrderNote`, `cancelOrder`)
+- `networkStatus.js` — Network monitoring with offline detection
+- `App.js` — Main app with Supabase auth, order integration, reporting, role-based access
+- `sqliteStorage.js` — Local SQLite storage for offline cache
+- `i18n.js` — Multi-language support (EN/ES)
+- `logger.js` — File-based logging (daily `.log` files, 30-day retention, 50 MB cap)
 
 **Credentials:**
 - Located in `supabaseClient.js` (lines 3-4)
@@ -247,16 +262,17 @@ eas build --platform ios --profile preview
 ## Technical Stack
 
 - **Framework**: React Native 0.81.5
-- **Build System**: Expo 55.0.4
+- **Build System**: Expo SDK 54
 - **Language**: JavaScript/React
 - **Cloud Database**: Supabase (PostgreSQL) with real-time capabilities
-- **Cloud Auth**: Supabase Auth (email/password with reset)
+- **Cloud Auth**: Supabase Auth (email/password with reset; session persisted via AsyncStorage)
 - **Local Storage**: SQLite (expo-sqlite) on native, in-memory on web
 - **Biometric Auth**: expo-local-authentication (Face ID/Fingerprint)
 - **Network Detection**: @react-native-community/netinfo
 - **Localization**: Custom i18n.js (EN/ES)
-- **Logging**: Custom logger.js with INFO/WARN/ERROR levels
-- **Async Storage**: @react-native-async-storage/async-storage
+- **Logging**: File-based logger (expo-file-system), daily `.log` files, 30-day/50 MB retention
+- **Async Storage**: @react-native-async-storage/async-storage (Supabase session + fallback log buffer)
+- **File System**: expo-file-system (log file writes)
 - **UI Components**: React Native built-ins + SVG icons
 - **Safe Area**: react-native-safe-area-context
 
@@ -264,23 +280,32 @@ eas build --platform ios --profile preview
 
 ```
 sol-native/
-├── App.js                      # Main app (2100+ lines)
+├── App.js                      # Main app (2600+ lines)
 │                               #   • Splash screen with 5-tap admin access
 │                               #   • Customer auth (login/register/password reset/auto-login)
 │                               #   • Biometric auth (Face ID/Fingerprint with toggle)
 │                               #   • Customer screens (home/new order/my orders/profile)
+│                               #     - Sunday pickup slots; same-day cutoff at 10 AM
+│                               #     - Order cancellation with reason modal
+│                               #     - Add/edit note on existing orders
+│                               #     - One-click store call button
 │                               #   • Admin dashboard (orders/routes/reports)
 │                               #   • Role-based navigation & access control
 ├── supabaseClient.js           # Supabase integration (cloud operations)
+│                               #   restoreSession, cancelOrder, appendOrderNote
+│                               #   findCustomerByPhone, setCustomerAuthId
+│                               #   AsyncStorage session persistence adapter
 ├── networkStatus.js            # Network detection & monitoring
 ├── sqliteStorage.js            # Local SQLite storage (offline cache + biometric prefs)
 ├── i18n.js                     # English/Spanish translations
-├── logger.js                   # Logging system (INFO/WARN/ERROR)
+├── logger.js                   # File-based logging (daily .log files, 30-day retention)
 ├── mmkvStorage.js              # MMKV storage integration
 ├── app.json                    # Expo config
 ├── babel.config.js             # Babel config
 ├── eas.json                    # EAS build config
 ├── README.md                   # This file
+├── LOGGER_DOCUMENTATION.md     # Logger API reference
+├── SUPABASE_INTEGRATION.md     # Supabase setup & SQL migrations
 └── assets/                     # Icons & images
 ```
 
@@ -288,15 +313,21 @@ sol-native/
 
 - [ ] Verify all npm dependencies are compatible
 - [ ] Test customer authentication (login/register/password reset)
+- [ ] Test auto-login: close and reopen app — should land on home screen without password prompt
 - [ ] Test admin authentication (5-tap hidden access)
 - [ ] Test biometric authentication (enable/disable toggle)
 - [ ] Test biometric login on iPhone (Face ID) and Android (Fingerprint)
 - [ ] Test fallback to password if biometric fails
+- [ ] Test order creation with special instructions
+- [ ] Test Add/Edit Note on an existing order
+- [ ] Test order cancellation with reason; verify `deleted_at` set in Supabase
+- [ ] Test Sunday pickup slot visibility (run before/after 10 AM)
+- [ ] Test "Call Us" button dials store number
 - [ ] Test offline order creation & sync on reconnect
 - [ ] Test admin order sync on login
 - [ ] Test reports with different timeframes (weekly/monthly/yearly)
 - [ ] Test role-based access (admin sees reports, driver doesn't)
-- [ ] Test auto-login persistence across app restarts
+- [ ] Verify log files written to `documentDirectory/sol_logs/` on device
 - [ ] Build APK/iOS with `eas build`
 - [ ] Test on real devices (iPhone + Android phone with biometric)
 - [ ] Verify no sensitive data in logs

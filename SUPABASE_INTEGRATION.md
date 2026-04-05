@@ -573,3 +573,76 @@ const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 - [React Native + Supabase](https://supabase.com/docs/guides/getting-started/quickstarts/react-native)
 - [Edge Functions](https://supabase.com/docs/guides/functions)
 - [Twilio SMS Integration](https://www.twilio.com/docs/sms)
+
+---
+
+## Applied SQL Migrations (April 2026)
+
+The following migrations have already been run on the live Supabase project `rvhpvvffhngxowkjanqz`. They are recorded here for reference when recreating or migrating the database.
+
+### Migration 1 — Sol-POS Customer Linking (`auth_user_id`)
+
+Bridges existing sol-pos customer rows with new Supabase Auth users without changing `customers.id` (which would cascade-delete orders via FK).
+
+```sql
+-- Add auth_user_id so the mobile app can find its row without touching customers.id
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS auth_user_id UUID UNIQUE;
+
+-- Drop the old narrow policy before replacing
+DROP POLICY IF EXISTS "Users can view own profile" ON customers;
+
+-- Allow lookup by either auth_user_id (app users) or id (legacy sol-pos)
+CREATE POLICY "Users can view own profile" ON customers FOR SELECT
+  USING (auth.uid() = auth_user_id OR auth.uid()::text = id::text);
+
+CREATE POLICY "Users can update own profile" ON customers FOR UPDATE
+  USING (auth.uid() = auth_user_id OR auth.uid()::text = id::text);
+```
+
+**Why this matters**: When a customer registers in the mobile app and their phone number matches an existing sol-pos customer, `setCustomerAuthId()` sets `auth_user_id` on that row. The POS keeps all historical orders unchanged; the app finds the row via `auth_user_id`.
+
+---
+
+### Migration 2 — Order Cancellation Columns
+
+Soft-delete pattern so the POS can surface cancellations with reason rather than losing the record.
+
+```sql
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancellation_reason TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
+```
+
+**POS query to surface cancellations:**
+```sql
+SELECT * FROM orders WHERE deleted_at IS NOT NULL ORDER BY cancelled_at DESC;
+```
+
+---
+
+## Key `supabaseClient.js` Functions (Current)
+
+| Function | Purpose |
+|----------|---------|
+| `registerCustomer(email, pw)` | Supabase Auth signup |
+| `loginCustomer(email, pw)` | `signInWithPassword` |
+| `restoreSession()` | `getSession()` → `refreshSession()` — no password needed on restart |
+| `logoutCustomer()` | `signOut` |
+| `getCurrentUser()` | Returns `null` (not throw) on "Auth session missing" |
+| `findCustomerByPhone(phone)` | Check if customer exists in sol-pos by phone |
+| `setCustomerAuthId(id, userId, data)` | Set `auth_user_id` on existing row — FK-safe |
+| `createCustomerProfile(userId, data)` | Upsert new customer row |
+| `getCustomerProfile(userId)` | Match on `auth_user_id` first, fallback to `id` |
+| `updateCustomerProfile(userId, updates)` | Same dual-match pattern |
+| `createOrder(orderData)` | Insert order row |
+| `getNextOrderNumber(localMax)` | `MAX(order_number)` from DB; returns `max(db, local) + 1` |
+| `getCustomerOrders(userId)` | Resolves correct `customers.id` via `auth_user_id OR id` |
+| `getAllOrders()` | Admin — all orders desc |
+| `updateOrderStatus(orderId, status)` | Update `status` + `updated_at` |
+| `cancelOrder(orderId, reason)` | Sets `status=cancelled`, `cancellation_reason`, `cancelled_at`, `deleted_at` |
+| `appendOrderNote(orderId, note)` | Updates `note` field + `updated_at` |
+| `syncOrdersWithSupabase(localOrders)` | Upsert batch of local orders to cloud |
+| `updateOrderRoute(orderId, routeOrder)` | Update `route_order` |
+| `logSMS(smsData)` | Insert into `sms_log` |
+| `testSupabaseConnection()` | `getSession()` health check |
+
