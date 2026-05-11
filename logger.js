@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy"; // SDK 19: legacy API moved to this subpath
 import { Platform } from "react-native";
 
 // ─── Logger Utility ───

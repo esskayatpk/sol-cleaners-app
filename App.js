@@ -417,6 +417,11 @@ export default function App() {
   // ─── Check Biometric Availability ───
   useEffect(() => {
     const checkBiometric = async () => {
+      // Biometrics are not available in web browsers
+      if (Platform.OS === "web") {
+        setBiometricAvailable(false);
+        return;
+      }
       try {
         const compatible = await LocalAuthentication.hasHardwareAsync();
         if (compatible) {
@@ -1960,7 +1965,7 @@ export default function App() {
                     const existing = parts.slice(1).join(" — ");
                     setNoteModal({ orderId: o.id, orderNumber: o.order_number, notePrefix: prefix });
                     setNoteText(existing);
-                  }} style={{ marginTop: 8, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, alignItems: "center", justifyContent: "center" }}>
+                  }} style={{ marginTop: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, alignItems: "center", justifyContent: "center" }}>
                     <Icon name="edit" size={14} color={C.primary} /><BtnText style={{ color: C.primary }}>Add / Edit Note</BtnText>
                   </Btn>
                 )}
@@ -1989,7 +1994,7 @@ export default function App() {
                   style={{ borderWidth: 1, borderColor: C.border, borderRadius: 10, padding: 12, fontSize: 14, color: C.text, minHeight: 80, textAlignVertical: "top", marginBottom: 20 }}
                 />
                 <View style={{ flexDirection: "row", gap: 12 }}>
-                  <Btn onPress={() => setCancelModal(null)} style={{ flex: 1, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border }}>
+                  <Btn onPress={() => setCancelModal(null)} style={{ flex: 1, backgroundColor: C.card, borderWidth: 1, borderColor: C.border }}>
                     <BtnText style={{ color: C.text }}>Go Back</BtnText>
                   </Btn>
                   <Btn
@@ -2049,7 +2054,7 @@ export default function App() {
                   style={{ borderWidth: 1, borderColor: C.border, borderRadius: 10, padding: 12, fontSize: 14, color: C.text, minHeight: 100, textAlignVertical: "top", marginBottom: 20 }}
                 />
                 <View style={{ flexDirection: "row", gap: 12 }}>
-                  <Btn onPress={() => setNoteModal(null)} style={{ flex: 1, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border }}>
+                  <Btn onPress={() => setNoteModal(null)} style={{ flex: 1, backgroundColor: C.card, borderWidth: 1, borderColor: C.border }}>
                     <BtnText style={{ color: C.text }}>Cancel</BtnText>
                   </Btn>
                   <Btn

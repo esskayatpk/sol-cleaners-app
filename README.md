@@ -100,6 +100,37 @@ Admin button is never visible on customer-facing screens or when in customer mod
 
 Navigate to **Reports** tab to view business analytics:
 
+## 📅 Pickup Scheduling
+
+### Date Window
+The scheduler shows a **2-week rolling window** of Mon–Sun. Same day is only included if it is **before 10 AM** on the device clock.
+
+### Pickup Time Slots
+
+| Day | Available Slots |
+|-----|-----------------|
+| Monday – Friday | 6:00 PM – 7:00 PM, 7:00 PM – 8:00 PM |
+| Saturday | 4:00 PM – 5:00 PM, 5:00 PM – 6:00 PM, 6:00 PM – 7:00 PM |
+| Sunday | 10:00 AM – 11:00 AM, 11:00 AM – 12:00 PM, 12:00 PM – 1:00 PM |
+
+## 📋 Order Status Lifecycle
+
+Orders move through the following statuses set by admin/driver:
+
+| Status | Label | Description |
+|--------|-------|-------------|
+| `pending` | Pending | Order submitted, awaiting confirmation |
+| `confirmed` | Confirmed | Admin has confirmed the pickup |
+| `pickup_scheduled` | Scheduled | Driver scheduled for pickup |
+| `picked_up` | Picked Up | Items collected from customer |
+| `processing` | Processing | Items being cleaned |
+| `ready` | Ready | Cleaned items ready for delivery |
+| `out_for_delivery` | Delivering | Driver en route to customer |
+| `delivered` | Delivered | Items returned to customer |
+| `cancelled` | Cancelled | Cancelled by customer with reason |
+
+SMS notifications are sent to customers at: `confirmed`, `pickup_scheduled`, `picked_up`, `processing`, `ready`, `out_for_delivery`, `delivered`.
+
 ### Timeframe Options
 - **Weekly** — This week's data
 - **Monthly** — This month's data  
@@ -194,8 +225,12 @@ Reports update in real-time and are stored in Supabase.
 - **Sunday Slots**: 10 AM–1 PM Sunday pickup slots; same-day slots shown if before 10 AM
 - **Special Instructions**: Customer enters notes during order creation (appended to item description)
 - **Add/Edit Note After**: Customer can update special instructions on any non-cancelled order from My Orders
+- **Full Order Edit**: Customer can edit item quantities, pickup date/time, and payment method on pending orders
 - **Order Cancellation**: Customer can cancel pending/confirmed orders with a required reason; soft-deleted (`deleted_at`) so POS can surface reason
 - **One-Click Store Call**: "Call Us" button on new-order screen dials `(781) 784-3937` directly
+- **Minimum Order**: 10 items required to submit an order
+- **Payment Methods**: "Pay on Delivery" (default) or "Credit Card" selectable at order time
+- **Supported Item Types**: Shirts, Pants, Suits, Dresses, Coats/Jackets, Blouses, Sweaters, Traditional Wear, Comforters/Bedding, Curtains, Rugs, Other Items
 
 ### 📊 Business Analytics
 - **Weekly Reports**: Orders, completions, items, status breakdown
@@ -217,9 +252,11 @@ Reports update in real-time and are stored in Supabase.
 - **Remote Testing**: Expo Tunnel for worldwide testers
 
 ### 💬 Order Communication
-- **SMS Integration**: Native SMS mode for order notifications
-- **Status Updates**: Automatic SMS when order status changes
-- **Customer Notifications**: SMS sent at key milestones (picked up, processing, ready, delivered)
+- **SMS Mode — Native** (default): Opens the device SMS app pre-filled with the customer's number and status message. No backend required; works immediately.
+- **SMS Mode — Twilio** (optional): Auto-sends via a Supabase Edge Function. Configure `TWILIO_CONFIG` in `App.js` with Account SID, Auth Token, from-number, and Edge Function URL.
+- **Status Updates**: SMS triggered whenever admin changes an order status
+- **Customer Notifications**: SMS sent at key milestones (confirmed, scheduled, picked up, processing, ready, delivering, delivered)
+- **SMS Log**: All sent messages tracked in `sms_log` Supabase table and shown in admin SMS history
 
 ## Supabase Configuration
 
@@ -246,6 +283,104 @@ Your app is configured with Supabase project: `hngxowkjanqz`
 - Located in `supabaseClient.js` (lines 3-4)
 - Never hardcode in production; use `.env.local` for security
 
+## 🌐 Deploy as PWA on Hostinger
+
+Sol Cleaners exports as a fully static site that uploads directly to any web host. No server or Node.js required.
+
+### Step 1 — Build the Web Bundle
+
+Run inside the `sol-native/` folder:
+
+```bash
+npx expo export --platform web
+```
+
+This generates a `dist/` folder (~30–60 MB) containing the complete app as plain HTML/JS/CSS files.
+
+### Step 2 — Upload to Hostinger
+
+1. Log in to [hpanel.hostinger.com](https://hpanel.hostinger.com)
+2. Go to **Hosting → Manage → File Manager**
+3. Navigate to `public_html/` and delete any placeholder files
+4. Upload the **contents** of your local `dist/` folder (not the folder itself — upload what's inside it)
+5. Confirm `public_html/index.html` exists after upload
+
+> **Tip — FTP alternative:** Use FileZilla with credentials from Hostinger → Hosting → Manage → FTP Accounts. Connect and drag `dist/*` to `/public_html/`.
+
+### Step 3 — Create / Edit .htaccess
+
+In Hostinger File Manager, open or create `public_html/.htaccess` and paste:
+
+```apache
+RewriteEngine On
+
+# Force HTTPS
+RewriteCond %{HTTPS} off
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# SPA fallback — required for React Navigation to work on page refresh
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ /index.html [L]
+```
+
+> **⚠️ The SPA fallback lines are critical.** Without them, refreshing any screen other than the home page returns a 404 error.
+
+### Step 4 — Enable Free SSL (HTTPS)
+
+1. Hostinger Dashboard → **Hosting → Manage → SSL**
+2. Click **Install** on the free Let's Encrypt certificate
+3. HTTPS is now active — required for PWA install prompts
+
+### Step 5 — Install as PWA on Phones
+
+Share the URL with customers. They install it like a native app:
+
+| Device | Browser | How |
+|--------|---------|-----|
+| iPhone / iPad | Safari | Share → **Add to Home Screen** |
+| Android | Chrome | Three-dot menu → **Add to Home Screen** |
+| Desktop | Chrome / Edge | Click ⊕ in address bar → Install |
+
+The installed icon shows the Sol Cleaners name, navy theme, and favicon.
+
+### Updating After Code Changes
+
+```bash
+npx expo export --platform web   # rebuild
+# then in Hostinger File Manager:
+# 1. Delete all files in public_html/
+# 2. Upload new dist/ contents
+```
+
+No server restart needed — changes go live instantly.
+
+### Pre-Deployment Checklist
+
+- [ ] `npx expo export --platform web` completes without errors
+- [ ] All files from `dist/` uploaded to `public_html/`
+- [ ] `public_html/index.html` exists at root
+- [ ] `.htaccess` with HTTPS redirect + SPA fallback is in place
+- [ ] SSL certificate installed (HTTPS active)
+- [ ] Visit `https://your-domain.com` — app loads correctly
+- [ ] Test customer login, order creation
+- [ ] Test admin 5-tap gesture and admin login
+- [ ] Install PWA on iPhone (Safari) and Android (Chrome)
+
+---
+
+## 📖 User Guide
+
+A full illustrated HTML user guide is available at:
+
+```
+sol-native/docs/user-guide.html
+```
+
+Open it in any browser. It includes a fixed left sidebar with links to all topics and scrollable content on the right — covering customer registration, placing orders, admin access, route management, reports, Hostinger deployment steps, and FAQ.
+
+---
+
 ## Build for App Store / Google Play
 
 ```bash
@@ -258,6 +393,31 @@ eas build --platform android --profile preview
 # For iOS
 eas build --platform ios --profile preview
 ```
+
+### EAS Build Profiles
+
+| Profile | Distribution | Android Output | Notes |
+|---------|-------------|----------------|-------|
+| `development` | Internal | APK | Includes dev client for debugging |
+| `preview` | Internal | APK | Side-loadable test build |
+| `production` | Store | AAB (App Bundle) | Auto-increments `versionCode` |
+
+### App Identifiers
+
+| Platform | Value |
+|----------|-------|
+| iOS Bundle Identifier | `com.solcleaners.app` |
+| Android Package | `com.solcleaners.app` |
+| Deep Link Scheme | `solcleaners://` |
+| EAS Project ID | `b15629fd-4a94-40ea-a39b-83ed288c4290` |
+
+### iOS Permissions (in `app.json`)
+- **Local Network** — syncing with cleaning orders
+- **Location When In Use** — route optimization and delivery tracking
+- `ITSAppUsesNonExemptEncryption: false` — required for App Store export compliance
+
+### Android Permissions
+- `INTERNET`, `ACCESS_COARSE_LOCATION`, `ACCESS_FINE_LOCATION`
 
 ## Technical Stack
 
@@ -273,7 +433,8 @@ eas build --platform ios --profile preview
 - **Logging**: File-based logger (expo-file-system), daily `.log` files, 30-day/50 MB retention
 - **Async Storage**: @react-native-async-storage/async-storage (Supabase session + fallback log buffer)
 - **File System**: expo-file-system (log file writes)
-- **UI Components**: React Native built-ins + SVG icons
+- **Navigation**: Custom screen state machine (`screen` + `mode` state) — React Navigation is **not** used
+- **UI Components**: React Native built-ins + SVG icons (react-native-svg)
 - **Safe Area**: react-native-safe-area-context
 
 ## File Structure
@@ -299,7 +460,9 @@ sol-native/
 ├── sqliteStorage.js            # Local SQLite storage (offline cache + biometric prefs)
 ├── i18n.js                     # English/Spanish translations
 ├── logger.js                   # File-based logging (daily .log files, 30-day retention)
-├── mmkvStorage.js              # MMKV storage integration
+├── backend.js                  # AsyncStorage wrapper w/ retry & timeout (Android-safe init)
+├── mmkvStorage.js              # MMKV storage integration (secondary/fallback; react-native-mmkv
+│                               #   not in dependencies — safe to ignore if unused)
 ├── app.json                    # Expo config
 ├── babel.config.js             # Babel config
 ├── eas.json                    # EAS build config
@@ -475,129 +638,15 @@ Send SMS Notification to Customer:
 STATUS UPDATED ✓ (local + cloud)
 ```
 
-## Key Features
+### 👤 Customer Profile Editing
+- Customers can update their **name, phone, address, city, and ZIP** from the Profile screen
+- Changes saved to local SQLite immediately and synced to Supabase when online
+- Profile data is used to auto-fill new order forms
 
-### 🔐 Authentication & Persistence
-- **Supabase Auth**: Cloud-based authentication with email/password
-- **Local Backup**: Credentials stored in SQLite for offline access
-- **Hybrid Login**: Tries Supabase first, falls back to local if offline
-- **Auto-Login**: Credentials persisted across app launches
-- **Sign Out Control**: Customers can manually sign out and clear credentials
-
-### ☁️ Cloud Backup & Sync
-- **Local-First**: All changes saved to SQLite immediately for instant response
-- **Cloud Sync**: Changes automatically replicated to Supabase when online
-- **Offline-Ready**: App works completely offline, syncs on reconnection
-- **Conflict Resolution**: Cloud is source of truth; local cache is working copy
-- **Real-time Updates**: Ordered data available on admin dashboard instantly when online
-
-### 📡 Network Detection
-- **Continuous Monitoring**: Tracks online/offline status in real-time
-- **Automatic Sync**: Downloads fresh data from cloud when connection restored
-- **Queue System**: Queues operations when offline, executes on reconnection
-- **User Feedback**: App shows sync status (Online/Offline/Syncing)
-- **Graceful Degradation**: Full functionality offline, enhanced features when online
-
-### 🎯 Order Management
-- **Online**: New orders visible on admin dashboard instantly
-- **Offline**: Orders created locally, synced when online
-- **Status Updates**: Status changes replicate to cloud with SMS notifications
-- **Route Optimization**: Admin can optimize pickup routes; saved to cloud
-- **Pickup Scheduling**: Schedule future pickups; synced to cloud
-
-### 🔐 Automatic Login (Credential Persistence)
-- **First Time**: Customer registers with email, password, and details
-- **Credentials Saved**: Email & password are stored locally on device using SQLite
-- **Auto-Login**: App opens directly to home screen on all future app starts—no login needed
-- **Sign Out Control**: Customers can sign out from profile, which clears saved credentials
-- **Device-Local**: Credentials never sent to server, stored securely on device only
-
-### 🌍 Multi-Language Support
-- English & Spanish available
-- Select language on splash screen
-- All screens translated (Home, Schedule Pickup, Admin)
-- Store info (Sol Cleaners) shown in selected language
-
-### 📱 Multi-Platform
-- **iOS**: Full support via Expo Go or native build
-- **Android**: Full support via Expo Go or native build  
-- **Web**: Responsive browser version (in-memory storage session)
-
-### 📊 Admin Dashboard
-- View all customer orders
-- Track pickup schedules
-- Manage driver assignments
-- Real-time order status updates
-- Route optimization for efficient pickups
-
-## Demo Admin Accounts
-
-| Email | Password | Role |
-|-------|----------|------|
-| admin@solcleanersinc.com | SolAdmin2026! | Admin |
-| driver@solcleanersinc.com | SolDriver2026! | Driver |
-| manager@solcleanersinc.com | SolMgr2026! | Manager |
-
-## Supabase Configuration
-
-Your app is configured with Supabase project: `hngxowkjanqz`
-
-**Database Tables:**
-- `customers` - Customer profiles (id, email, name, phone, address, city, zip)
-- `orders` - Order details (id, order_number, customer_id, status, pickup_date, pickup_time, num_items, route_order, lat, lng)
-- `sms_log` - SMS delivery tracking (id, order_id, to_phone, text, status, created_at)
-
-**Key Files:**
-- `supabaseClient.js` - Supabase integration layer (29 functions for all operations)
-- `networkStatus.js` - Network monitoring with offline detection
-- `App.js` - Main app with Supabase auth & order integration
-- `sqliteStorage.js` - Local SQLite storage for offline cache
-
-**Credentials:**
-- Located in `supabaseClient.js` (lines 3-4)
-- Never hardcode in production; use `.env.local` for security
-
-## Build for App Store / Google Play
-
-```bash
-npm install -g eas-cli
-eas login
-eas build:configure
-eas build --platform all
-eas submit --platform ios
-eas submit --platform android
-```
-
-## Technical Stack
-
-- **Framework**: React Native 0.76.6
-- **Build System**: Expo 55.0.4
-- **Language**: JavaScript/React
-- **Cloud Database**: Supabase (PostgreSQL) with real-time capabilities
-- **Cloud Auth**: Supabase Auth (email/password)
-- **Local Storage**: SQLite (expo-sqlite) on native, in-memory on web
-- **Network Detection**: @react-native-community/netinfo
-- **Localization**: Custom i18n.js (EN/ES)
-- **Logging**: Custom logger.js with INFO/WARN/ERROR levels
-- **UI Components**: React Native built-ins + SVG icons
-- **Safe Area**: react-native-safe-area-context
-
-## File Structure
-
-```
-sol-native/
-├── App.js                      # Main app component (customer + admin screens)
-├── supabaseClient.js           # Supabase integration (cloud operations)
-├── networkStatus.js            # Network detection & monitoring
-├── sqliteStorage.js            # Local SQLite storage (offline cache)
-├── i18n.js                     # English/Spanish translations
-├── logger.js                   # Logging system
-├── app.json                    # Expo config
-├── babel.config.js             # Babel config
-├── SUPABASE_INTEGRATION.md     # Setup & architecture guide
-└── assets/                     # Icons & images
-```
+### 🛡️ Admin — Additional Details
+- **Last Login Display**: Admin portal shows the timestamp of the previous admin session on login
+- **Demo/Mock Orders**: App ships with 5 sample orders pre-loaded for first-run testing. These are replaced by live Supabase data once synced.
 
 ## Support
 
-For issues or feature requests, contact the development team.
+For issues or feature requests, contact the development team at **admin@solcleanersinc.com** or call **(781) 784-3937**.

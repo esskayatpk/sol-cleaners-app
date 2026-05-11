@@ -7,7 +7,15 @@
     "userInterfaceStyle": "light",
     "scheme": "solcleaners",
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png",
+      "name": "Sol Cleaners",
+      "shortName": "Sol Cleaners",
+      "description": "Sol Cleaners – Professional dry cleaning & laundry service",
+      "themeColor": "#1B3A5C",
+      "backgroundColor": "#F5F7FA",
+      "display": "standalone",
+      "startUrl": "/"
     },
     "ios": {
       "supportsTablet": false,
