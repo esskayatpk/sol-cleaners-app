@@ -127,6 +127,25 @@ export const restoreSession = async () => {
 };
 
 /**
+ * Resend email confirmation to a customer who has not yet verified their address.
+ * @param {string} email
+ */
+export const resendConfirmationEmail = async (email) => {
+  try {
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email,
+    });
+    if (error) throw error;
+    logger.info('Confirmation email resent', { email });
+    return { error: null };
+  } catch (e) {
+    logger.warn('Resend confirmation failed', { error: e.message });
+    return { error: e.message };
+  }
+};
+
+/**
  * Logout customer
  */
 export const logoutCustomer = async () => {
@@ -392,13 +411,34 @@ export const getAllOrders = async () => {
 };
 
 /**
- * Get customer's orders
+ * Get customer's orders by phone number (no auth required).
+ * Orders placed from both the app and sol-pos are matched by phone.
+ * @param {string} phone - customer phone number
+ */
+export const getCustomerOrdersByPhone = async (phone) => {
+  try {
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('phone', phone)
+      .order('created', { ascending: false });
+
+    if (error) throw error;
+
+    logger.info('Customer orders fetched by phone', { phone, count: data.length });
+    return { data, error: null };
+  } catch (e) {
+    logger.error('Failed to fetch customer orders by phone', { error: e.message });
+    return { data: null, error: e.message };
+  }
+};
+
+/**
+ * Get customer's orders by auth uid (kept for backward compatibility)
  * @param {string} userId - Supabase auth uid
  */
 export const getCustomerOrders = async (userId) => {
   try {
-    // For sol-pos-linked customers, orders are stored under the original customers.id,
-    // not the auth uid. Resolve the actual customer row id first.
     let customerId = userId;
     const { data: profile } = await supabase
       .from('customers')

@@ -6,16 +6,12 @@ import { useTranslation } from "./i18n";
 import logger from "./logger";
 import storage from "./sqliteStorage"; // SQLite-based storage (reliable on Android & iOS)
 import { 
-  registerCustomer, 
-  loginCustomer, 
-  logoutCustomer,
-  getCurrentUser,
   createOrder,
   getNextOrderNumber,
   findCustomerByPhone,
   setCustomerAuthId,
   getAllOrders, 
-  getCustomerOrders,
+  getCustomerOrdersByPhone,
   updateOrderStatus as updateOrderStatusSupabase, 
   updateOrderRoute,
   createCustomerProfile,
@@ -26,7 +22,6 @@ import {
   logSMS,
   cancelOrder,
   appendOrderNote,
-  restoreSession,
 } from "./supabaseClient"; // Supabase for cloud storage
 import { subscribeToNetworkChanges, isAppOnline, checkNetworkStatus } from "./networkStatus"; // Network monitoring
 import * as LocalAuthentication from "expo-local-authentication";
@@ -557,6 +552,7 @@ export default function App() {
           setCustName(cust.name || "");
           setCustPhone(cust.phone || "");
           setCustEmail(cust.email || "");
+          setCustPassword(creds.password); // ← restore password so logout re-save works
           setCustAddress(cust.address || "");
           setCustCity(cust.city || "Sharon");
           setCustZip(cust.zip || "02067");
@@ -603,59 +599,43 @@ export default function App() {
     if (!custAddress.trim()) { setCustLoginError("Please enter your street address."); return; }
 
     try {
-      // Try to register with Supabase if online
+      // Sync the customer profile to Supabase (no auth required — anon writes allowed)
       if (isOnline && supabaseReady) {
-        const { user, error } = await registerCustomer(custEmail, custPassword);
-        
-        if (error) {
-          setCustLoginError(error);
-          logger.warn("Supabase registration failed, trying local", { error });
-          return; // stop here — don't save locally with a bad registration
-        }
+        const { data: existingCustomer } = await findCustomerByPhone(custPhone);
 
-        if (user) {
-          // Check if this phone number already exists in the customers table
-          // (e.g. the customer was added manually in sol-pos).
-          const { data: existingCustomer } = await findCustomerByPhone(custPhone);
-
-          if (existingCustomer && existingCustomer.auth_user_id !== user.id) {
-            // Phone matched a sol-pos record — set auth_user_id on that row.
-            // We do NOT change customers.id so existing orders FK references are preserved.
-            const { error: linkError } = await setCustomerAuthId(
-              existingCustomer.id,
-              user.id,
-              { email: custEmail, address: custAddress, city: custCity, zip: custZip }
-            );
-            if (linkError) {
-              logger.warn("Could not link to existing sol-pos customer, creating new profile", { error: linkError });
-              await createCustomerProfile(user.id, { email: custEmail, name: custName, phone: custPhone, address: custAddress, city: custCity, zip: custZip });
-            } else {
-              logger.info("Linked new app user to existing sol-pos customer", { phone: custPhone });
-            }
-          } else {
-            // Brand new customer — create a fresh profile
-            const { error: profileError } = await createCustomerProfile(user.id, {
-              email: custEmail, name: custName, phone: custPhone,
-              address: custAddress, city: custCity, zip: custZip,
-            });
-            if (profileError) {
-              logger.warn("Failed to create Supabase profile", { error: profileError });
-            } else {
-              logger.info("Customer registered with Supabase", { email: custEmail });
-            }
-          }
+        if (existingCustomer) {
+          // Phone already in DB (e.g. added via sol-pos) — update address/email only
+          await setCustomerAuthId(existingCustomer.id, existingCustomer.id, {
+            email: custEmail, address: custAddress, city: custCity, zip: custZip,
+          });
+          // Store the existing DB id locally so orders link correctly
+          const customerData = { id: existingCustomer.id, name: custName, phone: custPhone, email: custEmail, address: custAddress, city: custCity, zip: custZip };
+          await saveCustomer(customerData);
+          logger.info("Linked registration to existing sol-pos customer", { phone: custPhone });
+        } else {
+          // Brand new customer — generate a local UUID and create the profile
+          const newId = generateUUID();
+          await createCustomerProfile(newId, {
+            email: custEmail, name: custName, phone: custPhone,
+            address: custAddress, city: custCity, zip: custZip,
+          });
+          const customerData = { id: newId, name: custName, phone: custPhone, email: custEmail, address: custAddress, city: custCity, zip: custZip };
+          await saveCustomer(customerData);
+          logger.info("New customer profile created", { id: newId });
         }
+      } else {
+        // Offline — save locally with a generated id
+        const newId = generateUUID();
+        const customerData = { id: newId, name: custName, phone: custPhone, email: custEmail, address: custAddress, city: custCity, zip: custZip };
+        await saveCustomer(customerData);
       }
 
-      // Always save locally for offline access
-      const customerData = { name: custName, phone: custPhone, email: custEmail, address: custAddress, city: custCity, zip: custZip };
-      await saveCustomer(customerData);
       await storage.saveCustomerCredentials(custEmail, custPassword);
 
       setCustLoggedIn(true);
       setCustAccountCreated(true);
       setScreen("home");
-      logger.info("Customer registered successfully", { email: custEmail, platform: isOnline ? "Supabase+Local" : "Local" });
+      logger.info("Customer registered successfully", { email: custEmail });
     } catch (e) {
       setCustLoginError(e.message || "Registration failed. Please try again.");
       logger.error("Customer registration error", { error: e.message });
@@ -667,58 +647,33 @@ export default function App() {
     if (!custEmail.trim() || !custPassword.trim()) { setCustLoginError("Please enter email and password."); return; }
 
     try {
-      let customerProfile = null;
-      let loginSuccess = false;
+      // Validate credentials against local SQLite store (no auth server needed)
+      const creds = await storage.getCustomerCredentials();
+      const cust = await storage.getCustomer();
 
-      // Try to login with Supabase if online
-      if (isOnline && supabaseReady) {
-        const { user, error } = await loginCustomer(custEmail, custPassword);
-        
-        if (!error && user) {
-          // Get customer profile from Supabase
-          const { data: profile, error: profileError } = await getCustomerProfile(user.id);
-          if (profile && !profileError) {
-            customerProfile = profile;
-            loginSuccess = true;
-            // Refresh local cache so offline access stays current
-            await storage.saveCustomer(profile);
-            await storage.saveCustomerCredentials(custEmail, custPassword);
-            logger.info("Customer login successful via Supabase", { email: custEmail });
-          } else {
-            logger.warn("Failed to fetch Supabase profile, trying local", { error: profileError });
-          }
-        } else {
-          logger.warn("Supabase login failed, trying local", { error });
-        }
-      }
-
-      // Fall back to local storage if online attempt failed or offline
-      if (!loginSuccess) {
-        const creds = await storage.getCustomerCredentials();
-        const cust = await storage.getCustomer();
-        
-        if (creds && cust) {
-          if (creds.email.toLowerCase() === custEmail.toLowerCase().trim() && creds.password === custPassword) {
-            customerProfile = cust;
-            loginSuccess = true;
-            logger.info("Customer login successful via local storage", { email: custEmail });
-          }
-        }
-      }
-
-      if (loginSuccess && customerProfile) {
-        setCustName(customerProfile.name || "");
-        setCustPhone(customerProfile.phone || "");
-        setCustAddress(customerProfile.address || "");
-        setCustCity(customerProfile.city || "");
-        setCustZip(customerProfile.zip || "");
+      if (creds && cust &&
+          creds.email.toLowerCase() === custEmail.toLowerCase().trim() &&
+          creds.password === custPassword) {
+        setCustName(cust.name || "");
+        setCustPhone(cust.phone || "");
+        setCustAddress(cust.address || "");
+        setCustCity(cust.city || "");
+        setCustZip(cust.zip || "");
         setCustLoggedIn(true);
         setScreen("home");
+        logger.info("Customer login successful", { email: custEmail });
+
+        // Background sync: refresh profile from Supabase DB by phone (no auth required)
+        if (isOnline && supabaseReady && cust.phone) {
+          findCustomerByPhone(cust.phone).then(({ data }) => {
+            if (data) storage.saveCustomer({ ...cust, ...data }).catch(() => {});
+          }).catch(() => {});
+        }
         return;
       }
 
       setCustLoginError("Invalid email or password. Don't have an account? Tap Register below.");
-      logger.warn("Customer login failed", { error: "Invalid credentials" });
+      logger.warn("Customer login failed — credentials did not match");
     } catch (e) {
       logger.error("Customer login error", { error: e.message });
       setCustLoginError("Error signing in. Please try again.");
@@ -726,32 +681,20 @@ export default function App() {
   };
 
   const handleCustLogout = async () => {
-    // Keep credentials saved—customer will auto-login next time
-    // Credentials only cleared if user explicitly uninstalls or resets app
+    // Save credentials so auto-login works on next app open
     try {
-      // Try to logout from Supabase if online
-      if (isOnline && supabaseReady) {
-        const { error } = await logoutCustomer();
-        if (error) {
-          logger.warn("Supabase logout failed, but continuing with local logout", { error });
-        } else {
-          logger.info("Customer logged out from Supabase", { email: custEmail });
-        }
-      }
-
-      // Save credentials to SQLite for auto-login next time
       if (custEmail && custPassword) {
         await storage.saveCustomerCredentials(custEmail, custPassword);
-        logger.info("Customer signed out (credentials saved for auto-login)", { email: custEmail });
       }
+      logger.info("Customer signed out (credentials saved for auto-login)", { email: custEmail });
     } catch (e) {
       logger.error("Error during logout", { error: e.message });
     }
-    
+
     setCustLoggedIn(false);
     setCustName(""); setCustPhone(""); setCustEmail(""); setCustPassword("");
     setCustAddress(""); setCustCity("Sharon"); setCustZip("02067");
-    setShowAdminButton(false); setAdminTapCount(0); // Hide admin button when returning to splash
+    setShowAdminButton(false); setAdminTapCount(0);
     setMode(null); setScreen("home");
   };
 
@@ -796,13 +739,12 @@ export default function App() {
     setCustOrders(localFiltered);
 
     if (!isOnline || !supabaseReady) return;
+    if (!isOnline || !supabaseReady || !custPhone) return;
     try {
-      let user = await getCurrentUser().catch(() => null);
-      if (!user) return; // no live session yet (background re-auth may still be running)
-      const { data, error } = await getCustomerOrders(user.id);
+      const { data, error } = await getCustomerOrdersByPhone(custPhone);
       if (!error && data && data.length > 0) {
         setCustOrders(data);
-        // Merge fresh statuses back into main orders list
+        // Merge fresh statuses back into local orders list
         setOrders(prev => {
           const updated = prev.map(o => {
             const fresh = data.find(d => d.id === o.id);
@@ -846,6 +788,7 @@ export default function App() {
           setCustName(cust.name || "");
           setCustPhone(cust.phone || "");
           setCustEmail(cust.email || "");
+          setCustPassword(creds.password); // ← restore so logout re-save guard works
           setCustAddress(cust.address || "");
           setCustCity(cust.city || "Sharon");
           setCustZip(cust.zip || "02067");
@@ -854,44 +797,11 @@ export default function App() {
           setScreen("home");
           logger.info("Auto-logged in from local storage", { email: creds.email });
 
-          // Silently restore the Supabase session in the background.
-          // Try persisted session first (no password needed), then fall back to
-          // password re-auth in case the session has expired after >60 days.
-          if (isOnline && supabaseReady) {
-            const applyProfile = (userId) => {
-              getCustomerProfile(userId).then(({ data }) => {
-                if (data) {
-                  storage.saveCustomer(data);
-                  setCustName(data.name || "");
-                  setCustPhone(data.phone || "");
-                  setCustAddress(data.address || "");
-                  setCustCity(data.city || "Sharon");
-                  setCustZip(data.zip || "02067");
-                }
-              });
-            };
-
-            restoreSession()
-              .then(({ user, error }) => {
-                if (!error && user) {
-                  // Session was alive in AsyncStorage — no password needed
-                  logger.info("Background Supabase session restored (cached)", { email: creds.email });
-                  applyProfile(user.id);
-                } else {
-                  // Cached session missing or expired — fall back to password re-auth
-                  loginCustomer(creds.email, creds.password)
-                    .then(({ user: pwUser, error: pwError }) => {
-                      if (pwError) {
-                        logger.warn("Background Supabase re-auth failed — customer will need to log in again", { error: pwError });
-                      } else {
-                        logger.info("Background Supabase session restored via password", { email: creds.email });
-                        if (pwUser) applyProfile(pwUser.id);
-                      }
-                    })
-                    .catch(e => logger.warn("Background re-auth error", { error: e.message }));
-                }
-              })
-              .catch(e => logger.warn("Session restore error", { error: e.message }));
+          // Background sync: refresh profile from Supabase DB by phone (no auth required)
+          if (isOnline && supabaseReady && cust.phone) {
+            findCustomerByPhone(cust.phone).then(({ data }) => {
+              if (data) storage.saveCustomer({ ...cust, ...data }).catch(() => {});
+            }).catch(() => {});
           }
           return;
         }
@@ -1144,9 +1054,9 @@ export default function App() {
     // Sync order to Supabase if online
     if (isOnline && supabaseReady) {
       try {
-        // Get the authenticated user's ID — null is fine (guest/local-only session).
-        let customerId = null;
-        try { customerId = (await getCurrentUser())?.id ?? null; } catch (_) {}
+        // Use the locally stored customer id (set during registration — no auth required)
+        const savedCust = await storage.getCustomer().catch(() => null);
+        const customerId = savedCust?.id ?? null;
         const supabasePayload = {
           ...newOrder,
           customer_id: customerId,
